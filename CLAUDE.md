@@ -83,6 +83,6 @@ cd ~/tech_world_bot && git pull && npm install && npm run build && pm2 restart t
 
 ## Notes
 
-- Uses Claude claude-sonnet-4-20250514 model
+- Uses Claude 3.5 Haiku model (`claude-3-5-haiku-20241022`) for fast, cost-effective responses
 - Keeps last 20 messages for conversation context
 - System prompt configures "Clawd" personality as friendly coding tutor
