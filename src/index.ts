@@ -119,13 +119,6 @@ async function handleChatMessage(
 }
 
 export default defineAgent({
-  prewarm: async (proc) => {
-    // Called when a new process is spawned
-  },
-  request: async (req) => {
-    // Accept the job with our custom identity
-    await req.accept("Clawd", "bot-claude");
-  },
   entry: async (ctx: JobContext) => {
     console.log("[Bot] Connecting to room...");
     await ctx.connect();
@@ -197,6 +190,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   cli.runApp(
     new WorkerOptions({
       agent: fileURLToPath(import.meta.url),
+      requestFunc: async (req) => {
+        // Accept with custom identity "bot-claude"
+        await req.accept("Clawd", "bot-claude");
+      },
     })
   );
 }
