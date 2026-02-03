@@ -119,9 +119,16 @@ async function handleChatMessage(
 }
 
 export default defineAgent({
+  prewarm: async (proc) => {
+    // Called when a new process is spawned
+  },
+  request: async (req) => {
+    // Accept the job with our custom identity
+    await req.accept("Clawd", "bot-claude");
+  },
   entry: async (ctx: JobContext) => {
     console.log("[Bot] Connecting to room...");
-    await ctx.connect({ participantIdentity: "bot-claude" });
+    await ctx.connect();
     console.log(`[Bot] Connected to room: ${ctx.room.name}`);
 
     const room = ctx.room;
