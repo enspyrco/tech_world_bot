@@ -121,7 +121,7 @@ async function handleChatMessage(
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     console.log("[Bot] Connecting to room...");
-    await ctx.connect();
+    await ctx.connect({ participantIdentity: "bot-claude" });
     console.log(`[Bot] Connected to room: ${ctx.room.name}`);
 
     const room = ctx.room;
