@@ -72,11 +72,11 @@ interface MessageContext {
   role: "user" | "assistant";
   content: string;
 }
-const messageHistory: MessageContext[] = [];
 const MAX_HISTORY = 20; // Keep last 20 messages for context
 
 async function handleChatMessage(
   ctx: JobContext,
+  messageHistory: MessageContext[],
   senderId: string,
   senderName: string,
   messageId: string,
@@ -186,6 +186,15 @@ export default defineAgent({
 
     const room = ctx.room;
 
+    // Scoped per room instance to prevent context leaking across restarts.
+    const messageHistory: MessageContext[] = [];
+
+    // Exit on disconnect so PM2 can restart us.
+    room.on(RoomEvent.Disconnected, (reason?: string) => {
+      console.log(`[Bot] Room disconnected: ${reason ?? "unknown"}. Shutting down for PM2 restart.`);
+      process.exit(1);
+    });
+
     // Listen for data messages
     room.on(
       RoomEvent.DataReceived,
@@ -222,7 +231,7 @@ export default defineAgent({
           const challengeId = message.challengeId as string | undefined;
 
           // Handle asynchronously - don't await in event handler
-          handleChatMessage(ctx, senderId, senderName, messageId, text, challengeId).catch(
+          handleChatMessage(ctx, messageHistory, senderId, senderName, messageId, text, challengeId).catch(
             (error) => console.error("[Bot] Error handling message:", error)
           );
         } catch (error) {
