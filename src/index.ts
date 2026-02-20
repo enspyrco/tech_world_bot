@@ -261,6 +261,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   cli.runApp(
     new WorkerOptions({
       agent: fileURLToPath(import.meta.url),
+      agentName: "clawd",
       requestFunc: async (req) => {
         // Accept with custom identity "bot-claude"
         await req.accept("Clawd", "bot-claude");
