@@ -22,8 +22,8 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
-    "@livekit/agents": "^0.7.1",
-    "@livekit/rtc-node": "^0.13.12",
+    "@livekit/agents": "^1.0.46",
+    "@livekit/rtc-node": "^0.13.24",
     "dotenv": "^17.2.3"
   },
   "devDependencies": {
