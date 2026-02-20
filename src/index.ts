@@ -28,6 +28,43 @@ Keep responses concise (2-4 sentences usually) since this is a chat in a game. B
 
 You're in a shared chat room - multiple players can see your responses, so sometimes you might address the group or reference that others might find the explanation useful too.`;
 
+const CHALLENGE_EVALUATION_PROMPT = `You are Clawd, a coding tutor evaluating a challenge submission in Tech World.
+
+Review the player's code and determine if it correctly solves the challenge. Be encouraging either way.
+
+- If the code is correct and solves the challenge, congratulate the player briefly.
+- If the code is incorrect or incomplete, explain what's wrong and give a hint to fix it.
+
+IMPORTANT: At the very end of your response, on its own line, output exactly one of these tags:
+<!-- CHALLENGE_RESULT: {"result":"pass"} -->
+<!-- CHALLENGE_RESULT: {"result":"fail"} -->
+
+Do NOT include any text after the tag. The tag must be the last thing in your response.`;
+
+/**
+ * Parses the structured challenge result tag from Claude's response.
+ * Returns the clean text (without the tag) and the result ("pass" or "fail").
+ */
+function parseChallengeResult(text: string): {
+  cleanText: string;
+  result: "pass" | "fail" | null;
+} {
+  const match = text.match(
+    /<!-- CHALLENGE_RESULT:\s*(\{[^}]+\})\s*-->\s*$/
+  );
+  if (!match) {
+    return { cleanText: text, result: null };
+  }
+  try {
+    const parsed = JSON.parse(match[1]);
+    const result = parsed.result === "pass" ? "pass" : parsed.result === "fail" ? "fail" : null;
+    const cleanText = text.slice(0, match.index).trimEnd();
+    return { cleanText, result };
+  } catch {
+    return { cleanText: text, result: null };
+  }
+}
+
 const anthropic = new Anthropic();
 
 // Message history for context (per room)
@@ -43,56 +80,79 @@ async function handleChatMessage(
   senderId: string,
   senderName: string,
   messageId: string,
-  text: string
+  text: string,
+  challengeId?: string
 ): Promise<void> {
-  console.log(`[Chat] ${senderName} (${senderId}): ${text}`);
+  console.log(`[Chat] ${senderName} (${senderId}): ${text}${challengeId ? ` [challenge: ${challengeId}]` : ""}`);
 
-  // Add user message to history
-  messageHistory.push({
-    role: "user",
-    content: `${senderName}: ${text}`,
-  });
+  const isChallenge = !!challengeId;
 
-  // Trim history if too long
-  while (messageHistory.length > MAX_HISTORY) {
-    messageHistory.shift();
+  // Only add to conversation history for regular chat (not challenge evaluations)
+  if (!isChallenge) {
+    messageHistory.push({
+      role: "user",
+      content: `${senderName}: ${text}`,
+    });
+
+    // Trim history if too long
+    while (messageHistory.length > MAX_HISTORY) {
+      messageHistory.shift();
+    }
   }
 
   try {
-    // Call Claude API
+    // Call Claude API — use evaluation prompt for challenges, regular prompt otherwise
     const response = await anthropic.messages.create({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: messageHistory,
+      system: isChallenge ? CHALLENGE_EVALUATION_PROMPT : SYSTEM_PROMPT,
+      messages: isChallenge
+        ? [{ role: "user", content: text }]
+        : messageHistory,
     });
 
     // Extract text from response
-    const responseText =
+    const rawText =
       response.content[0].type === "text" ? response.content[0].text : "";
 
-    // Add assistant response to history
-    messageHistory.push({
-      role: "assistant",
-      content: responseText,
-    });
+    // Parse challenge result if this is a challenge evaluation
+    let responseText = rawText;
+    let challengeResult: "pass" | "fail" | null = null;
+    if (isChallenge) {
+      const parsed = parseChallengeResult(rawText);
+      responseText = parsed.cleanText;
+      challengeResult = parsed.result;
+      console.log(`[Challenge] ${challengeId}: ${challengeResult ?? "no result parsed"}`);
+    }
 
-    // Send response back via data channel
-    const responsePayload = JSON.stringify({
+    // Only add to history for regular chat
+    if (!isChallenge) {
+      messageHistory.push({
+        role: "assistant",
+        content: responseText,
+      });
+    }
+
+    // Build response payload
+    const payload: Record<string, unknown> = {
       type: "chat-response",
       id: `${messageId}-response`,
-      messageId: messageId, // ID of message being responded to
+      messageId: messageId,
       text: responseText,
       senderName: "Clawd",
       timestamp: new Date().toISOString(),
-    });
+    };
+    if (challengeId) payload.challengeId = challengeId;
+    if (challengeResult) payload.challengeResult = challengeResult;
 
     const encoder = new TextEncoder();
-    // Use ctx.agent (LocalParticipant) to publish data
-    await ctx.agent?.publishData(encoder.encode(responsePayload), {
-      topic: "chat-response",
-      reliable: true,
-    });
+    await ctx.agent?.publishData(
+      encoder.encode(JSON.stringify(payload)),
+      {
+        topic: "chat-response",
+        reliable: true,
+      }
+    );
 
     console.log(
       `[Response] Sent: "${responseText.substring(0, 50)}..."`
@@ -159,8 +219,10 @@ export default defineAgent({
             return;
           }
 
+          const challengeId = message.challengeId as string | undefined;
+
           // Handle asynchronously - don't await in event handler
-          handleChatMessage(ctx, senderId, senderName, messageId, text).catch(
+          handleChatMessage(ctx, senderId, senderName, messageId, text, challengeId).catch(
             (error) => console.error("[Bot] Error handling message:", error)
           );
         } catch (error) {
