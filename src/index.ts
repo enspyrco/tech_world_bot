@@ -190,8 +190,8 @@ export default defineAgent({
     const messageHistory: MessageContext[] = [];
 
     // Exit on disconnect so PM2 can restart us.
-    room.on(RoomEvent.Disconnected, (reason?: string) => {
-      console.log(`[Bot] Room disconnected: ${reason ?? "unknown"}. Shutting down for PM2 restart.`);
+    room.on(RoomEvent.Disconnected, (reason) => {
+      console.log(`[Bot] Room disconnected: ${String(reason)}. Shutting down for PM2 restart.`);
       process.exit(1);
     });
 
