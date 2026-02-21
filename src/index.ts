@@ -67,6 +67,64 @@ function parseChallengeResult(text: string): {
 
 const anthropic = new Anthropic();
 
+// --- World state ---
+
+/** Grid defaults — overwritten when map-info arrives from a client. */
+const DEFAULT_GRID_SIZE = 50;
+const DEFAULT_CELL_SIZE = 32;
+const DEFAULT_SPAWN = { x: 25, y: 25 };
+
+interface MapInfo {
+  mapId: string;
+  barriers: [number, number][];
+  terminals: [number, number][];
+  spawnPoint: { x: number; y: number };
+  gridSize: number;
+  cellSize: number;
+}
+
+/** Mutable world state, scoped per room inside `entry`. */
+interface WorldState {
+  map: MapInfo | null;
+  /** Clawd's current position in mini-grid coordinates. */
+  position: { x: number; y: number };
+}
+
+/** Convert a mini-grid coordinate to pixel position. */
+function gridToPixel(
+  gridX: number,
+  gridY: number,
+  cellSize: number = DEFAULT_CELL_SIZE
+): { x: number; y: number } {
+  return { x: gridX * cellSize, y: gridY * cellSize };
+}
+
+/** Publish Clawd's current position on the `position` data channel. */
+async function publishPosition(
+  ctx: JobContext,
+  world: WorldState,
+  cellSize: number = DEFAULT_CELL_SIZE
+): Promise<void> {
+  const pixel = gridToPixel(world.position.x, world.position.y, cellSize);
+  const payload = {
+    playerId: "bot-claude",
+    points: [{ x: pixel.x, y: pixel.y }],
+    directions: ["none"],
+  };
+
+  const encoder = new TextEncoder();
+  await ctx.agent?.publishData(encoder.encode(JSON.stringify(payload)), {
+    topic: "position",
+    reliable: false,
+  });
+
+  console.log(
+    `[Position] Published: grid(${world.position.x},${world.position.y}) → pixel(${pixel.x},${pixel.y})`
+  );
+}
+
+// --- Chat ---
+
 // Message history for context (per room)
 interface MessageContext {
   role: "user" | "assistant";
@@ -188,6 +246,13 @@ export default defineAgent({
 
     // Scoped per room instance to prevent context leaking across restarts.
     const messageHistory: MessageContext[] = [];
+    const world: WorldState = {
+      map: null,
+      position: { ...DEFAULT_SPAWN },
+    };
+
+    // Publish initial position at default spawn so the client can render us.
+    await publishPosition(ctx, world);
 
     // Exit on disconnect so PM2 can restart us.
     room.on(RoomEvent.Disconnected, (reason) => {
@@ -204,38 +269,75 @@ export default defineAgent({
         _kind?: DataPacketKind,
         topic?: string
       ) => {
-        // Only process chat messages
-        if (topic !== "chat") return;
-
         // Ignore messages from ourselves
         if (participant?.identity === "bot-claude") return;
 
-        try {
-          const decoder = new TextDecoder();
-          const message = JSON.parse(decoder.decode(payload));
+        const decoder = new TextDecoder();
 
-          const text = message.text as string;
-          const messageId = message.id as string;
-          const senderName =
-            (message.senderName as string) ||
-            participant?.name ||
-            participant?.identity ||
-            "Unknown";
-          const senderId = participant?.identity || "unknown";
+        // --- Map info from client ---
+        if (topic === "map-info") {
+          try {
+            const message = JSON.parse(decoder.decode(payload));
+            world.map = {
+              mapId: message.mapId as string,
+              barriers: message.barriers as [number, number][],
+              terminals: message.terminals as [number, number][],
+              spawnPoint: {
+                x: message.spawnPoint[0] as number,
+                y: message.spawnPoint[1] as number,
+              },
+              gridSize: (message.gridSize as number) || DEFAULT_GRID_SIZE,
+              cellSize: (message.cellSize as number) || DEFAULT_CELL_SIZE,
+            };
 
-          if (!text || !messageId) {
-            console.warn("[Bot] Received malformed message:", message);
-            return;
+            // Move to the map's spawn point
+            world.position = { ...world.map.spawnPoint };
+
+            console.log(
+              `[Map] Received map-info: ${world.map.mapId} ` +
+                `(${world.map.barriers.length} barriers, ` +
+                `${world.map.terminals.length} terminals, ` +
+                `spawn: ${world.map.spawnPoint.x},${world.map.spawnPoint.y})`
+            );
+
+            // Re-publish position at the correct spawn
+            publishPosition(ctx, world, world.map.cellSize).catch((err) =>
+              console.error("[Position] Failed to publish:", err)
+            );
+          } catch (error) {
+            console.error("[Map] Error parsing map-info:", error);
           }
+          return;
+        }
 
-          const challengeId = message.challengeId as string | undefined;
+        // --- Chat messages ---
+        if (topic === "chat") {
+          try {
+            const message = JSON.parse(decoder.decode(payload));
 
-          // Handle asynchronously - don't await in event handler
-          handleChatMessage(ctx, messageHistory, senderId, senderName, messageId, text, challengeId).catch(
-            (error) => console.error("[Bot] Error handling message:", error)
-          );
-        } catch (error) {
-          console.error("[Bot] Error parsing message:", error);
+            const text = message.text as string;
+            const messageId = message.id as string;
+            const senderName =
+              (message.senderName as string) ||
+              participant?.name ||
+              participant?.identity ||
+              "Unknown";
+            const senderId = participant?.identity || "unknown";
+
+            if (!text || !messageId) {
+              console.warn("[Bot] Received malformed message:", message);
+              return;
+            }
+
+            const challengeId = message.challengeId as string | undefined;
+
+            // Handle asynchronously - don't await in event handler
+            handleChatMessage(ctx, messageHistory, senderId, senderName, messageId, text, challengeId).catch(
+              (error) => console.error("[Bot] Error handling message:", error)
+            );
+          } catch (error) {
+            console.error("[Bot] Error parsing chat message:", error);
+          }
         }
       }
     );
