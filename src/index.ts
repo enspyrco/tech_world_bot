@@ -8,6 +8,7 @@ import {
 import { RoomEvent, DataPacketKind, type RemoteParticipant } from "@livekit/rtc-node";
 import Anthropic from "@anthropic-ai/sdk";
 import { fileURLToPath } from "node:url";
+import { startWandering, type WorldState } from "./agent-loop.js";
 
 const SYSTEM_PROMPT = `You are Clawd, a friendly and encouraging coding tutor in Tech World - a multiplayer game where players learn programming together.
 
@@ -81,13 +82,6 @@ interface MapInfo {
   spawnPoint: { x: number; y: number };
   gridSize: number;
   cellSize: number;
-}
-
-/** Mutable world state, scoped per room inside `entry`. */
-interface WorldState {
-  map: MapInfo | null;
-  /** Clawd's current position in mini-grid coordinates. */
-  position: { x: number; y: number };
 }
 
 /** Convert a mini-grid coordinate to pixel position. */
@@ -254,9 +248,13 @@ export default defineAgent({
     // Publish initial position at default spawn so the client can render us.
     await publishPosition(ctx, world);
 
+    // Start the autonomous wandering loop (waits for map-info internally).
+    const wanderController = startWandering(ctx, world);
+
     // Exit on disconnect so PM2 can restart us.
     room.on(RoomEvent.Disconnected, (reason) => {
       console.log(`[Bot] Room disconnected: ${String(reason)}. Shutting down for PM2 restart.`);
+      wanderController.abort();
       process.exit(1);
     });
 
