@@ -10,11 +10,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fileURLToPath } from "node:url";
 import {
   startWandering,
+  startStuckDetection,
   publishPath,
   abortableSleep,
   findAdjacentCell,
   STEP_DURATION_MS,
   type WorldState,
+  type PlayerTerminalState,
 } from "./agent-loop.js";
 import {
   findPath,
@@ -65,6 +67,8 @@ Guidelines:
 - If their code is empty, suggest what to start with
 - Keep it to 2-3 sentences max
 - Be encouraging — getting stuck is part of learning!`;
+
+const PROACTIVE_NUDGE_PROMPT = `You are Clawd, a friendly coding tutor in a multiplayer game. A player has been working on a coding challenge for a couple of minutes. Write a brief, encouraging check-in message (1-2 sentences). Mention the challenge by name. Don't give hints yet — just offer to help. Keep it casual and warm.`;
 
 /**
  * Parses the structured challenge result tag from Claude's response.
@@ -410,6 +414,150 @@ async function sendHint(
   });
 }
 
+/** Handle a proactively detected stuck player: walk to terminal, send nudge, resume wandering. */
+async function handleProactiveApproach(
+  ctx: JobContext,
+  world: WorldState,
+  wanderControllerRef: { current: AbortController },
+  trackedPlayers: Map<string, PlayerTerminalState>,
+  player: PlayerTerminalState,
+  proactiveControllerRef: { current: AbortController | null },
+): Promise<void> {
+  console.log(
+    `[Proactive] Approaching ${player.playerName} at terminal (${player.terminalX},${player.terminalY})`
+  );
+
+  // Create an abort controller for this proactive approach so help-requests can cancel it.
+  const controller = new AbortController();
+  proactiveControllerRef.current = controller;
+
+  // 1. Abort wandering
+  wanderControllerRef.current.abort();
+
+  const map = world.map;
+  if (!map) {
+    console.warn("[Proactive] No map data, skipping approach");
+    player.proactiveOffered = true;
+    proactiveControllerRef.current = null;
+    wanderControllerRef.current = startWandering(ctx, world);
+    return;
+  }
+
+  const barrierSet = buildBarrierSet(map.barriers);
+
+  // 2. Find adjacent walkable cell to terminal
+  const targetCell = findAdjacentCell(
+    { x: player.terminalX, y: player.terminalY },
+    barrierSet,
+    map.gridSize,
+  );
+
+  // 3. Walk to the terminal
+  if (targetCell && !controller.signal.aborted) {
+    const alreadyAdjacent =
+      Math.max(
+        Math.abs(world.position.x - player.terminalX),
+        Math.abs(world.position.y - player.terminalY),
+      ) <= 1;
+
+    if (!alreadyAdjacent) {
+      const path = findPath(world.position, targetCell, barrierSet, map.gridSize);
+
+      if (path.length >= 2) {
+        const directions = pathToDirections(path);
+        const points = pathToPixels(path, map.cellSize);
+
+        console.log(
+          `[Proactive] Walking to terminal: (${world.position.x},${world.position.y}) → ` +
+            `(${targetCell.x},${targetCell.y}) (${directions.length} steps)`
+        );
+
+        try {
+          await publishPath(ctx, points, directions);
+        } catch (err) {
+          console.error("[Proactive] Failed to publish path:", err);
+        }
+
+        // Wait for walk to complete
+        const walkDuration = directions.length * STEP_DURATION_MS;
+        const completed = await abortableSleep(walkDuration, controller.signal);
+        if (!completed) {
+          console.log("[Proactive] Walk aborted");
+          proactiveControllerRef.current = null;
+          wanderControllerRef.current = startWandering(ctx, world);
+          return;
+        }
+
+        // Update position
+        const end = path[path.length - 1];
+        world.position = { x: end.x, y: end.y };
+      }
+    }
+  }
+
+  // 4. Check that the player is still at the terminal and we weren't aborted
+  if (!trackedPlayers.has(player.playerId) || controller.signal.aborted) {
+    console.log("[Proactive] Player left terminal or approach aborted, skipping nudge");
+    proactiveControllerRef.current = null;
+    wanderControllerRef.current = startWandering(ctx, world);
+    return;
+  }
+
+  // 5. Call Claude API for a natural nudge message
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 256,
+      system: PROACTIVE_NUDGE_PROMPT,
+      messages: [{
+        role: "user",
+        content: `Player name: ${player.playerName}\nChallenge title: "${player.challengeTitle}"`,
+      }],
+    });
+
+    // Re-check abort after API call (help-request may have arrived while waiting)
+    if (controller.signal.aborted || !trackedPlayers.has(player.playerId)) {
+      console.log("[Proactive] Aborted during API call, skipping nudge");
+      proactiveControllerRef.current = null;
+      wanderControllerRef.current = startWandering(ctx, world);
+      return;
+    }
+
+    const nudgeText =
+      response.content[0].type === "text"
+        ? response.content[0].text
+        : "Hey! How's it going with that challenge? Let me know if you'd like a hint!";
+
+    // 6. Publish nudge on chat-response topic
+    const payload = {
+      type: "chat-response",
+      id: `proactive-${player.playerId}-${Date.now()}`,
+      text: nudgeText,
+      senderName: "Clawd",
+      proactive: true,
+      timestamp: new Date().toISOString(),
+    };
+
+    const encoder = new TextEncoder();
+    await ctx.agent?.publishData(encoder.encode(JSON.stringify(payload)), {
+      topic: "chat-response",
+      reliable: true,
+    });
+
+    console.log(`[Proactive] Sent nudge to ${player.playerName}: "${nudgeText.substring(0, 60)}..."`);
+  } catch (error) {
+    console.error("[Proactive] Failed to send nudge:", error);
+  }
+
+  // 7. Mark proactive as offered
+  player.proactiveOffered = true;
+
+  // 8. Linger near the terminal for 10 seconds, then resume wandering
+  await abortableSleep(10_000, controller.signal);
+  proactiveControllerRef.current = null;
+  wanderControllerRef.current = startWandering(ctx, world);
+}
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     console.log("[Bot] Connecting to room...");
@@ -425,6 +573,11 @@ export default defineAgent({
       position: { ...DEFAULT_SPAWN },
     };
 
+    // Player terminal tracking for proactive pair-programming.
+    const trackedPlayers = new Map<string, PlayerTerminalState>();
+    const proactiveControllerRef: { current: AbortController | null } = { current: null };
+    let isBusy = false;
+
     // Publish initial position at default spawn so the client can render us.
     await publishPosition(ctx, world);
 
@@ -432,10 +585,34 @@ export default defineAgent({
     // Wrapped in a ref so help-request handlers can abort and restart it.
     const wanderControllerRef = { current: startWandering(ctx, world) };
 
+    // Start the stuck detection loop for proactive pair-programming.
+    const stuckDetectionController = startStuckDetection(
+      trackedPlayers,
+      async (player) => {
+        // Skip if already busy with a help request or another proactive approach.
+        if (isBusy || proactiveControllerRef.current) return;
+
+        isBusy = true;
+        try {
+          await handleProactiveApproach(
+            ctx,
+            world,
+            wanderControllerRef,
+            trackedPlayers,
+            player,
+            proactiveControllerRef,
+          );
+        } finally {
+          isBusy = false;
+        }
+      },
+    );
+
     // Exit on disconnect so PM2 can restart us.
     room.on(RoomEvent.Disconnected, (reason) => {
       console.log(`[Bot] Room disconnected: ${String(reason)}. Shutting down for PM2 restart.`);
       wanderControllerRef.current.abort();
+      stuckDetectionController.abort();
       process.exit(1);
     });
 
@@ -489,13 +666,65 @@ export default defineAgent({
           return;
         }
 
+        // --- Terminal activity (editor open/close) ---
+        if (topic === "terminal-activity") {
+          try {
+            const message = JSON.parse(decoder.decode(payload));
+            // Use participant identity as the canonical key for consistency
+            // with ParticipantDisconnected cleanup.
+            const identity = participant?.identity || (message.playerId as string);
+            const action = message.action as string;
+
+            if (action === "open") {
+              trackedPlayers.set(identity, {
+                playerId: identity,
+                playerName: (message.playerName as string) || "Unknown",
+                challengeId: message.challengeId as string,
+                challengeTitle: message.challengeTitle as string,
+                challengeDescription: message.challengeDescription as string,
+                terminalX: message.terminalX as number,
+                terminalY: message.terminalY as number,
+                openedAt: Date.now(),
+                proactiveOffered: false,
+                helpRequestActive: false,
+              });
+              console.log(
+                `[Terminal] ${message.playerName} opened editor for "${message.challengeTitle}" ` +
+                  `at (${message.terminalX},${message.terminalY})`
+              );
+            } else if (action === "close") {
+              trackedPlayers.delete(identity);
+              console.log(`[Terminal] ${identity} closed editor`);
+            }
+          } catch (error) {
+            console.error("[Terminal] Error parsing terminal-activity:", error);
+          }
+          return;
+        }
+
         // --- Help requests ---
         if (topic === "help-request") {
           try {
             const message = JSON.parse(decoder.decode(payload));
-            handleHelpRequest(ctx, world, wanderControllerRef, message).catch(
-              (error) => console.error("[Help] Error handling help request:", error)
-            );
+
+            // Mark help as active so stuck detection skips this player.
+            const identity = participant?.identity || "";
+            const tracked = trackedPlayers.get(identity);
+            if (tracked) {
+              tracked.helpRequestActive = true;
+            }
+
+            // If a proactive approach to a different player is in progress, abort it.
+            if (proactiveControllerRef.current) {
+              console.log("[Help] Aborting proactive approach for incoming help request");
+              proactiveControllerRef.current.abort();
+              proactiveControllerRef.current = null;
+            }
+
+            isBusy = true;
+            handleHelpRequest(ctx, world, wanderControllerRef, message)
+              .catch((error) => console.error("[Help] Error handling help request:", error))
+              .finally(() => { isBusy = false; });
           } catch (error) {
             console.error("[Help] Error parsing help-request:", error);
           }
@@ -541,6 +770,7 @@ export default defineAgent({
 
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
       console.log(`[Bot] Participant left: ${participant.identity}`);
+      trackedPlayers.delete(participant.identity);
     });
 
     console.log("[Bot] Ready and listening for chat messages");
