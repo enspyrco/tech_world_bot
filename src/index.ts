@@ -8,7 +8,20 @@ import {
 import { RoomEvent, DataPacketKind, type RemoteParticipant } from "@livekit/rtc-node";
 import Anthropic from "@anthropic-ai/sdk";
 import { fileURLToPath } from "node:url";
-import { startWandering, type WorldState } from "./agent-loop.js";
+import {
+  startWandering,
+  publishPath,
+  abortableSleep,
+  findAdjacentCell,
+  STEP_DURATION_MS,
+  type WorldState,
+} from "./agent-loop.js";
+import {
+  findPath,
+  buildBarrierSet,
+  pathToDirections,
+  pathToPixels,
+} from "./pathfinding.js";
 
 const SYSTEM_PROMPT = `You are Clawd, a friendly and encouraging coding tutor in Tech World - a multiplayer game where players learn programming together.
 
@@ -41,6 +54,17 @@ IMPORTANT: At the very end of your response, on its own line, output exactly one
 <!-- CHALLENGE_RESULT: {"result":"fail"} -->
 
 Do NOT include any text after the tag. The tag must be the last thing in your response.`;
+
+const HELP_HINT_PROMPT = `You are Clawd, a friendly coding tutor in Tech World. A player is stuck on a coding challenge and has asked for help.
+
+Give ONE specific, actionable hint that nudges them in the right direction. Do NOT give the full solution or write the code for them.
+
+Guidelines:
+- Point out what concept or approach they should think about
+- If their code has a specific bug, hint at where to look without fixing it
+- If their code is empty, suggest what to start with
+- Keep it to 2-3 sentences max
+- Be encouraging — getting stuck is part of learning!`;
 
 /**
  * Parses the structured challenge result tag from Claude's response.
@@ -230,6 +254,162 @@ async function handleChatMessage(
   }
 }
 
+/** Handle a help-request: walk to the terminal, call Claude for a hint, publish the response. */
+async function handleHelpRequest(
+  ctx: JobContext,
+  world: WorldState,
+  wanderControllerRef: { current: AbortController },
+  message: Record<string, unknown>
+): Promise<void> {
+  const requestId = message.id as string;
+  const challengeTitle = message.challengeTitle as string;
+  const challengeDescription = message.challengeDescription as string;
+  const code = message.code as string;
+  const terminalX = message.terminalX as number;
+  const terminalY = message.terminalY as number;
+  const senderName = message.senderName as string;
+
+  console.log(`[Help] Request ${requestId} from ${senderName} for terminal at (${terminalX},${terminalY})`);
+
+  // 1. Abort wandering
+  wanderControllerRef.current.abort();
+
+  const map = world.map;
+  if (!map) {
+    console.warn("[Help] No map data available, sending hint from current position");
+    await sendHint(ctx, requestId, challengeTitle, challengeDescription, code);
+    wanderControllerRef.current = startWandering(ctx, world);
+    return;
+  }
+
+  const barrierSet = buildBarrierSet(map.barriers);
+
+  // 2. Find walkable cell adjacent to the terminal
+  const targetCell = findAdjacentCell(
+    { x: terminalX, y: terminalY },
+    barrierSet,
+    map.gridSize
+  );
+
+  // 3. Start Claude API call in parallel with walking
+  const hintPromise = callClaudeForHint(challengeTitle, challengeDescription, code);
+
+  // 4. Walk to the terminal (if we have a valid target and aren't already there)
+  if (targetCell) {
+    const alreadyAdjacent =
+      Math.max(
+        Math.abs(world.position.x - terminalX),
+        Math.abs(world.position.y - terminalY)
+      ) <= 1;
+
+    if (!alreadyAdjacent) {
+      const path = findPath(world.position, targetCell, barrierSet, map.gridSize);
+
+      if (path.length >= 2) {
+        const directions = pathToDirections(path);
+        const points = pathToPixels(path, map.cellSize);
+
+        console.log(
+          `[Help] Walking to terminal: (${world.position.x},${world.position.y}) → ` +
+            `(${targetCell.x},${targetCell.y}) (${directions.length} steps)`
+        );
+
+        try {
+          await publishPath(ctx, points, directions);
+        } catch (err) {
+          console.error("[Help] Failed to publish path:", err);
+        }
+
+        // 5. Wait for walk to complete
+        const walkDuration = directions.length * STEP_DURATION_MS;
+        await new Promise((resolve) => setTimeout(resolve, walkDuration));
+
+        // Update position
+        const end = path[path.length - 1];
+        world.position = { x: end.x, y: end.y };
+      }
+    } else {
+      console.log("[Help] Already adjacent to terminal, skipping walk");
+    }
+  } else {
+    console.warn("[Help] No walkable cell adjacent to terminal, sending hint from current position");
+  }
+
+  // 6. Await the hint from Claude
+  const hint = await hintPromise;
+
+  // 7. Publish hint on help-response topic
+  const payload = {
+    type: "help-response",
+    requestId,
+    hint,
+    timestamp: new Date().toISOString(),
+  };
+
+  const encoder = new TextEncoder();
+  await ctx.agent?.publishData(encoder.encode(JSON.stringify(payload)), {
+    topic: "help-response",
+    reliable: true,
+  });
+
+  console.log(`[Help] Sent hint for ${requestId}: "${hint.substring(0, 60)}..."`);
+
+  // 8. Linger near the terminal for 10 seconds, then resume wandering
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
+  wanderControllerRef.current = startWandering(ctx, world);
+}
+
+/** Call Claude API to generate a hint for a coding challenge. */
+async function callClaudeForHint(
+  challengeTitle: string,
+  challengeDescription: string,
+  code: string
+): Promise<string> {
+  try {
+    const userMessage = code.trim()
+      ? `Challenge: "${challengeTitle}"\nDescription: ${challengeDescription}\n\nPlayer's current code:\n\`\`\`dart\n${code}\n\`\`\``
+      : `Challenge: "${challengeTitle}"\nDescription: ${challengeDescription}\n\nThe player hasn't written any code yet.`;
+
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 512,
+      system: HELP_HINT_PROMPT,
+      messages: [{ role: "user", content: userMessage }],
+    });
+
+    return response.content[0].type === "text"
+      ? response.content[0].text
+      : "Hmm, I had trouble thinking of a hint. Try breaking the problem into smaller steps!";
+  } catch (error) {
+    console.error("[Help] Claude API error:", error);
+    return "Oops, I had a brain freeze! Try breaking the problem into smaller steps and tackle them one at a time.";
+  }
+}
+
+/** Shortcut: call Claude for a hint and publish it (used when no map is available). */
+async function sendHint(
+  ctx: JobContext,
+  requestId: string,
+  challengeTitle: string,
+  challengeDescription: string,
+  code: string
+): Promise<void> {
+  const hint = await callClaudeForHint(challengeTitle, challengeDescription, code);
+
+  const payload = {
+    type: "help-response",
+    requestId,
+    hint,
+    timestamp: new Date().toISOString(),
+  };
+
+  const encoder = new TextEncoder();
+  await ctx.agent?.publishData(encoder.encode(JSON.stringify(payload)), {
+    topic: "help-response",
+    reliable: true,
+  });
+}
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     console.log("[Bot] Connecting to room...");
@@ -249,12 +429,13 @@ export default defineAgent({
     await publishPosition(ctx, world);
 
     // Start the autonomous wandering loop (waits for map-info internally).
-    const wanderController = startWandering(ctx, world);
+    // Wrapped in a ref so help-request handlers can abort and restart it.
+    const wanderControllerRef = { current: startWandering(ctx, world) };
 
     // Exit on disconnect so PM2 can restart us.
     room.on(RoomEvent.Disconnected, (reason) => {
       console.log(`[Bot] Room disconnected: ${String(reason)}. Shutting down for PM2 restart.`);
-      wanderController.abort();
+      wanderControllerRef.current.abort();
       process.exit(1);
     });
 
@@ -304,6 +485,19 @@ export default defineAgent({
             );
           } catch (error) {
             console.error("[Map] Error parsing map-info:", error);
+          }
+          return;
+        }
+
+        // --- Help requests ---
+        if (topic === "help-request") {
+          try {
+            const message = JSON.parse(decoder.decode(payload));
+            handleHelpRequest(ctx, world, wanderControllerRef, message).catch(
+              (error) => console.error("[Help] Error handling help request:", error)
+            );
+          } catch (error) {
+            console.error("[Help] Error parsing help-request:", error);
           }
           return;
         }
