@@ -31,7 +31,7 @@ export interface WorldState {
 }
 
 /** Movement timing — must match client's MoveToEffect duration. */
-const STEP_DURATION_MS = 200;
+export const STEP_DURATION_MS = 200;
 
 /** Pause range between walks (milliseconds). */
 const MIN_PAUSE_MS = 2_000;
@@ -41,7 +41,7 @@ const MAX_PAUSE_MS = 5_000;
 const MAX_PATH_LENGTH = 20;
 
 /** Publish a full movement path on the `position` data channel. */
-async function publishPath(
+export async function publishPath(
   ctx: JobContext,
   points: { x: number; y: number }[],
   directions: DirectionName[]
@@ -83,7 +83,7 @@ function pickRandomDestination(
 }
 
 /** Sleep that respects abort signal. Resolves false if aborted. */
-function abortableSleep(
+export function abortableSleep(
   ms: number,
   signal: AbortSignal
 ): Promise<boolean> {
@@ -198,4 +198,38 @@ export function startWandering(
   loop().catch((err) => console.error("[Wander] Loop error:", err));
 
   return controller;
+}
+
+/**
+ * Find a walkable cell adjacent to a terminal position.
+ *
+ * Terminals themselves may be barriers, so this looks at all 8 neighbours
+ * and returns the nearest walkable one (preferring cardinal directions).
+ * Returns `null` if no adjacent cell is walkable.
+ */
+export function findAdjacentCell(
+  terminal: GridCell,
+  barrierSet: Set<string>,
+  gridSize: number
+): GridCell | null {
+  // Cardinal directions first (more natural approach angles), then diagonals
+  const offsets = [
+    { dx: 0, dy: 1 },   // below
+    { dx: 0, dy: -1 },  // above
+    { dx: -1, dy: 0 },  // left
+    { dx: 1, dy: 0 },   // right
+    { dx: -1, dy: 1 },  // below-left
+    { dx: 1, dy: 1 },   // below-right
+    { dx: -1, dy: -1 }, // above-left
+    { dx: 1, dy: -1 },  // above-right
+  ];
+
+  for (const { dx, dy } of offsets) {
+    const x = terminal.x + dx;
+    const y = terminal.y + dy;
+    if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) continue;
+    if (barrierSet.has(`${x},${y}`)) continue;
+    return { x, y };
+  }
+  return null;
 }
