@@ -16,6 +16,23 @@ import {
   pathToPixels,
 } from "./pathfinding.js";
 
+/** Tracks a player who currently has a terminal editor open. */
+export interface PlayerTerminalState {
+  playerId: string;
+  playerName: string;
+  challengeId: string;
+  challengeTitle: string;
+  challengeDescription: string;
+  terminalX: number;
+  terminalY: number;
+  /** Timestamp (Date.now()) when the editor was opened. */
+  openedAt: number;
+  /** Whether a proactive nudge has already been offered this session. */
+  proactiveOffered: boolean;
+  /** Whether an explicit help-request was received for this session. */
+  helpRequestActive: boolean;
+}
+
 /** Mutable world state — shared with index.ts. */
 export interface WorldState {
   map: {
@@ -232,4 +249,72 @@ export function findAdjacentCell(
     return { x, y };
   }
   return null;
+}
+
+/** Default time a player must be at a terminal before Clawd proactively offers help. */
+const DEFAULT_STUCK_THRESHOLD_MS = 120_000; // 2 minutes
+
+/** Default interval between stuck-detection checks. */
+const DEFAULT_CHECK_INTERVAL_MS = 30_000; // 30 seconds
+
+/**
+ * Periodically check for players who have been at a terminal for a while
+ * without requesting help, and notify the callback with the longest-waiting
+ * candidate.
+ *
+ * Returns an AbortController so the caller can stop the loop.
+ */
+export function startStuckDetection(
+  trackedPlayers: Map<string, PlayerTerminalState>,
+  onStuckPlayerFound: (player: PlayerTerminalState) => Promise<void>,
+  stuckThresholdMs: number = DEFAULT_STUCK_THRESHOLD_MS,
+  checkIntervalMs: number = DEFAULT_CHECK_INTERVAL_MS,
+): AbortController {
+  const controller = new AbortController();
+  const { signal } = controller;
+
+  const loop = async () => {
+    console.log("[StuckDetect] Detection loop started");
+
+    while (!signal.aborted) {
+      const ok = await abortableSleep(checkIntervalMs, signal);
+      if (!ok) break;
+
+      // Find candidates: open long enough, no proactive offer yet, no help request
+      const now = Date.now();
+      let oldest: PlayerTerminalState | null = null;
+
+      for (const player of trackedPlayers.values()) {
+        const elapsed = now - player.openedAt;
+        if (
+          elapsed >= stuckThresholdMs &&
+          !player.proactiveOffered &&
+          !player.helpRequestActive
+        ) {
+          if (!oldest || player.openedAt < oldest.openedAt) {
+            oldest = player;
+          }
+        }
+      }
+
+      if (oldest) {
+        console.log(
+          `[StuckDetect] Player "${oldest.playerName}" stuck on ` +
+            `"${oldest.challengeTitle}" for ${Math.round((now - oldest.openedAt) / 1000)}s ` +
+            `(${trackedPlayers.size} tracked)`
+        );
+        try {
+          await onStuckPlayerFound(oldest);
+        } catch (err) {
+          console.error("[StuckDetect] Error handling stuck player:", err);
+        }
+      }
+    }
+
+    console.log("[StuckDetect] Detection loop stopped");
+  };
+
+  loop().catch((err) => console.error("[StuckDetect] Loop error:", err));
+
+  return controller;
 }
