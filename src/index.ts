@@ -608,12 +608,15 @@ export default defineAgent({
       },
     );
 
-    // Exit on disconnect so PM2 can restart us.
-    room.on(RoomEvent.Disconnected, (reason) => {
-      console.log(`[Bot] Room disconnected: ${String(reason)}. Shutting down for PM2 restart.`);
-      wanderControllerRef.current.abort();
-      stuckDetectionController.abort();
-      process.exit(1);
+    // Clean up on disconnect — resolve the keep-alive promise so the entry
+    // function returns and the worker stays registered for the next dispatch.
+    const disconnectPromise = new Promise<void>((resolve) => {
+      room.on(RoomEvent.Disconnected, (reason) => {
+        console.log(`[Bot] Room disconnected: ${String(reason)}. Ready for next dispatch.`);
+        wanderControllerRef.current.abort();
+        stuckDetectionController.abort();
+        resolve();
+      });
     });
 
     // Listen for data messages
@@ -775,8 +778,8 @@ export default defineAgent({
 
     console.log("[Bot] Ready and listening for chat messages");
 
-    // Keep the agent running
-    await new Promise(() => {});
+    // Keep the agent running until the room disconnects.
+    await disconnectPromise;
   },
 });
 
