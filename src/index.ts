@@ -331,7 +331,7 @@ async function callClaudeForHint(
   code: string
 ): Promise<string> {
   if (!botConfig.helpHintPrompt) {
-    return "I'm not the right one to help with that — try asking Clawd!";
+    return `I'm not the right one to help with that — try asking the other bot!`;
   }
 
   try {
@@ -498,7 +498,7 @@ async function handleProactiveApproach(
     // 6. Publish nudge on chat-response topic
     const payload = {
       type: "chat-response",
-      id: `proactive-${player.playerId}-${Date.now()}`,
+      id: `proactive-${botConfig.agentName}-${player.playerId}-${Date.now()}`,
       text: nudgeText,
       senderName: botConfig.displayName,
       proactive: true,
@@ -528,12 +528,11 @@ async function handleProactiveApproach(
 /**
  * Check whether this bot should respond to a chat message.
  *
- * - Clawd (default bot): responds to everything
- * - Gremlin: only responds when addressed by name (case-insensitive)
+ * Bots with `respondsToAll: true` respond to every message.
+ * Others only respond when addressed by name (case-insensitive).
  */
 function shouldRespondToChat(botConfig: BotConfig, text: string): boolean {
-  if (botConfig.agentName === "clawd") return true;
-  // Name-addressed routing: respond only if message contains the bot's name
+  if (botConfig.respondsToAll) return true;
   return text.toLowerCase().includes(botConfig.agentName);
 }
 

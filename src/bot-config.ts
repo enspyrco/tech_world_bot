@@ -15,6 +15,8 @@ export interface BotConfig {
   helpHintPrompt: string | null;
   /** Proactive nudge prompt for stuck player detection. */
   proactiveNudgePrompt: string;
+  /** Whether this bot responds to all chat messages (true) or only when addressed by name (false). */
+  respondsToAll: boolean;
   /** Wandering behavior tuning. */
   wanderConfig: {
     minPauseMs: number;
@@ -35,6 +37,7 @@ const configs: Record<string, BotConfig> = {
     challengeEvalPrompt: clawd.CHALLENGE_EVALUATION_PROMPT,
     helpHintPrompt: clawd.HELP_HINT_PROMPT,
     proactiveNudgePrompt: clawd.PROACTIVE_NUDGE_PROMPT,
+    respondsToAll: true,
     wanderConfig: {
       minPauseMs: 2_000,
       maxPauseMs: 5_000,
@@ -49,6 +52,7 @@ const configs: Record<string, BotConfig> = {
     challengeEvalPrompt: gremlin.CHALLENGE_EVALUATION_PROMPT,
     helpHintPrompt: gremlin.HELP_HINT_PROMPT,
     proactiveNudgePrompt: gremlin.PROACTIVE_NUDGE_PROMPT,
+    respondsToAll: false,
     wanderConfig: {
       minPauseMs: 1_000,
       maxPauseMs: 3_000,
