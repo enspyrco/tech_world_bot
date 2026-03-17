@@ -25,8 +25,9 @@ import {
   pathToPixels,
 } from "./pathfinding.js";
 import { resolveBotConfig, type BotConfig } from "./bot-config.js";
+import { startHealthServer } from "./server.js";
 
-// Resolve config from CLI args (--bot=clawd or --bot=gremlin)
+// Resolve config from CLI args, BOT_NAME env var, or default to "clawd"
 const config = resolveBotConfig();
 
 /**
@@ -778,6 +779,15 @@ export default defineAgent({
 
 // Run the agent when executed directly
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // Start HTTP health-check server for Cloud Run (no-op locally if PORT unset).
+  startHealthServer();
+
+  // Graceful shutdown on SIGTERM (sent by Cloud Run before stopping a container).
+  process.on("SIGTERM", () => {
+    console.log("[Bot] SIGTERM received, shutting down gracefully...");
+    process.exit(0);
+  });
+
   cli.runApp(
     new WorkerOptions({
       agent: fileURLToPath(import.meta.url),
