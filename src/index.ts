@@ -55,6 +55,12 @@ function parseChallengeResult(text: string): {
 
 const anthropic = new Anthropic();
 
+/** Safely extract text from an Anthropic API response. */
+function extractText(response: Anthropic.Message): string {
+  const block = response.content[0];
+  return block?.type === "text" ? block.text : "";
+}
+
 // --- World state ---
 
 /** Grid defaults — overwritten when map-info arrives from a client. */
@@ -151,8 +157,7 @@ async function handleChatMessage(
     });
 
     // Extract text from response
-    const rawText =
-      response.content[0].type === "text" ? response.content[0].text : "";
+    const rawText = extractText(response);
 
     // Parse challenge result if this is a challenge evaluation
     let responseText = rawText;
@@ -346,9 +351,8 @@ async function callClaudeForHint(
       messages: [{ role: "user", content: userMessage }],
     });
 
-    return response.content[0].type === "text"
-      ? response.content[0].text
-      : "Hmm, I had trouble thinking of a hint. Try breaking the problem into smaller steps!";
+    return extractText(response)
+      || "Hmm, I had trouble thinking of a hint. Try breaking the problem into smaller steps!";
   } catch (error) {
     console.error("[Help] Claude API error:", error);
     return "Oops, I had a brain freeze! Try breaking the problem into smaller steps and tackle them one at a time.";
@@ -490,10 +494,8 @@ async function handleProactiveApproach(
       return;
     }
 
-    const nudgeText =
-      response.content[0].type === "text"
-        ? response.content[0].text
-        : "Hey! How's it going with that challenge? Let me know if you'd like a hint!";
+    const nudgeText = extractText(response)
+        || "Hey! How's it going with that challenge? Let me know if you'd like a hint!";
 
     // 6. Publish nudge on chat-response topic
     const payload = {
@@ -688,6 +690,12 @@ export default defineAgent({
         if (topic === "help-request") {
           // Skip help requests if this bot doesn't provide hints
           if (!config.helpHintPrompt) return;
+
+          // Drop if already handling a help request (prevents race condition).
+          if (isBusy) {
+            console.log("[Help] Already busy, dropping help request");
+            return;
+          }
 
           try {
             const message = JSON.parse(decoder.decode(payload));
