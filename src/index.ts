@@ -181,7 +181,7 @@ async function handleChatMessage(
     // Build response payload
     const payload: Record<string, unknown> = {
       type: "chat-response",
-      id: `${messageId}-response`,
+      id: `${messageId}-${botConfig.agentName}-response`,
       messageId: messageId,
       text: responseText,
       senderName: botConfig.displayName,
@@ -208,7 +208,7 @@ async function handleChatMessage(
     // Send error message back
     const errorPayload = JSON.stringify({
       type: "chat-response",
-      id: `${messageId}-error`,
+      id: `${messageId}-${botConfig.agentName}-error`,
       messageId: messageId,
       text: "Oops, I had a brain freeze! Could you try asking again?",
       senderName: botConfig.displayName,
