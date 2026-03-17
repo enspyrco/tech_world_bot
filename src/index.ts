@@ -24,51 +24,10 @@ import {
   pathToDirections,
   pathToPixels,
 } from "./pathfinding.js";
+import { resolveBotConfig, type BotConfig } from "./bot-config.js";
 
-const SYSTEM_PROMPT = `You are Clawd, a friendly and encouraging coding tutor in Tech World - a multiplayer game where players learn programming together.
-
-Your personality:
-- Warm and approachable, like a supportive friend who happens to know a lot about coding
-- Patient and never condescending - everyone was a beginner once
-- Enthusiastic about coding without being overwhelming
-- Use casual, conversational language (avoid overly formal or academic tone)
-
-Your teaching style:
-- Give hints and guide thinking rather than providing complete solutions
-- Ask clarifying questions to understand what the player is trying to achieve
-- Celebrate small wins and progress
-- Break complex concepts into digestible pieces
-- Use analogies and real-world examples when helpful
-
-Keep responses concise (2-4 sentences usually) since this is a chat in a game. Be helpful but don't write essays. If someone asks a complex question, offer to break it down into parts.
-
-You're in a shared chat room - multiple players can see your responses, so sometimes you might address the group or reference that others might find the explanation useful too.`;
-
-const CHALLENGE_EVALUATION_PROMPT = `You are Clawd, a coding tutor evaluating a challenge submission in Tech World.
-
-Review the player's code and determine if it correctly solves the challenge. Be encouraging either way.
-
-- If the code is correct and solves the challenge, congratulate the player briefly.
-- If the code is incorrect or incomplete, explain what's wrong and give a hint to fix it.
-
-IMPORTANT: At the very end of your response, on its own line, output exactly one of these tags:
-<!-- CHALLENGE_RESULT: {"result":"pass"} -->
-<!-- CHALLENGE_RESULT: {"result":"fail"} -->
-
-Do NOT include any text after the tag. The tag must be the last thing in your response.`;
-
-const HELP_HINT_PROMPT = `You are Clawd, a friendly coding tutor in Tech World. A player is stuck on a coding challenge and has asked for help.
-
-Give ONE specific, actionable hint that nudges them in the right direction. Do NOT give the full solution or write the code for them.
-
-Guidelines:
-- Point out what concept or approach they should think about
-- If their code has a specific bug, hint at where to look without fixing it
-- If their code is empty, suggest what to start with
-- Keep it to 2-3 sentences max
-- Be encouraging — getting stuck is part of learning!`;
-
-const PROACTIVE_NUDGE_PROMPT = `You are Clawd, a friendly coding tutor in a multiplayer game. A player has been working on a coding challenge for a couple of minutes. Write a brief, encouraging check-in message (1-2 sentences). Mention the challenge by name. Don't give hints yet — just offer to help. Keep it casual and warm.`;
+// Resolve config from CLI args (--bot=clawd or --bot=gremlin)
+const config = resolveBotConfig();
 
 /**
  * Parses the structured challenge result tag from Claude's response.
@@ -121,15 +80,16 @@ function gridToPixel(
   return { x: gridX * cellSize, y: gridY * cellSize };
 }
 
-/** Publish Clawd's current position on the `position` data channel. */
+/** Publish bot's current position on the `position` data channel. */
 async function publishPosition(
   ctx: JobContext,
   world: WorldState,
+  botConfig: BotConfig,
   cellSize: number = DEFAULT_CELL_SIZE
 ): Promise<void> {
   const pixel = gridToPixel(world.position.x, world.position.y, cellSize);
   const payload = {
-    playerId: "bot-claude",
+    playerId: botConfig.identity,
     points: [{ x: pixel.x, y: pixel.y }],
     directions: ["none"],
   };
@@ -156,6 +116,7 @@ const MAX_HISTORY = 20; // Keep last 20 messages for context
 
 async function handleChatMessage(
   ctx: JobContext,
+  botConfig: BotConfig,
   messageHistory: MessageContext[],
   senderId: string,
   senderName: string,
@@ -166,6 +127,12 @@ async function handleChatMessage(
   console.log(`[Chat] ${senderName} (${senderId}): ${text}${challengeId ? ` [challenge: ${challengeId}]` : ""}`);
 
   const isChallenge = !!challengeId;
+
+  // Skip challenge evaluation if this bot doesn't evaluate
+  if (isChallenge && !botConfig.challengeEvalPrompt) {
+    console.log(`[Chat] ${botConfig.displayName} doesn't evaluate challenges, skipping`);
+    return;
+  }
 
   // Only add to conversation history for regular chat (not challenge evaluations)
   if (!isChallenge) {
@@ -182,10 +149,11 @@ async function handleChatMessage(
 
   try {
     // Call Claude API — use evaluation prompt for challenges, regular prompt otherwise
+    const systemPrompt = isChallenge ? botConfig.challengeEvalPrompt! : botConfig.systemPrompt;
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
-      system: isChallenge ? CHALLENGE_EVALUATION_PROMPT : SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: isChallenge
         ? [{ role: "user", content: text }]
         : messageHistory,
@@ -219,7 +187,7 @@ async function handleChatMessage(
       id: `${messageId}-response`,
       messageId: messageId,
       text: responseText,
-      senderName: "Clawd",
+      senderName: botConfig.displayName,
       timestamp: new Date().toISOString(),
     };
     if (challengeId) payload.challengeId = challengeId;
@@ -246,7 +214,7 @@ async function handleChatMessage(
       id: `${messageId}-error`,
       messageId: messageId,
       text: "Oops, I had a brain freeze! Could you try asking again?",
-      senderName: "Clawd",
+      senderName: botConfig.displayName,
       timestamp: new Date().toISOString(),
     });
 
@@ -261,6 +229,7 @@ async function handleChatMessage(
 /** Handle a help-request: walk to the terminal, call Claude for a hint, publish the response. */
 async function handleHelpRequest(
   ctx: JobContext,
+  botConfig: BotConfig,
   world: WorldState,
   wanderControllerRef: { current: AbortController },
   message: Record<string, unknown>
@@ -281,8 +250,8 @@ async function handleHelpRequest(
   const map = world.map;
   if (!map) {
     console.warn("[Help] No map data available, sending hint from current position");
-    await sendHint(ctx, requestId, challengeTitle, challengeDescription, code);
-    wanderControllerRef.current = startWandering(ctx, world);
+    await sendHint(ctx, botConfig, requestId, challengeTitle, challengeDescription, code);
+    wanderControllerRef.current = startWandering(ctx, world, botConfig);
     return;
   }
 
@@ -296,7 +265,7 @@ async function handleHelpRequest(
   );
 
   // 3. Start Claude API call in parallel with walking
-  const hintPromise = callClaudeForHint(challengeTitle, challengeDescription, code);
+  const hintPromise = callClaudeForHint(botConfig, challengeTitle, challengeDescription, code);
 
   // 4. Walk to the terminal (if we have a valid target and aren't already there)
   if (targetCell) {
@@ -319,7 +288,7 @@ async function handleHelpRequest(
         );
 
         try {
-          await publishPath(ctx, points, directions);
+          await publishPath(ctx, points, directions, botConfig);
         } catch (err) {
           console.error("[Help] Failed to publish path:", err);
         }
@@ -360,15 +329,20 @@ async function handleHelpRequest(
 
   // 8. Linger near the terminal for 10 seconds, then resume wandering
   await new Promise((resolve) => setTimeout(resolve, 10_000));
-  wanderControllerRef.current = startWandering(ctx, world);
+  wanderControllerRef.current = startWandering(ctx, world, botConfig);
 }
 
 /** Call Claude API to generate a hint for a coding challenge. */
 async function callClaudeForHint(
+  botConfig: BotConfig,
   challengeTitle: string,
   challengeDescription: string,
   code: string
 ): Promise<string> {
+  if (!botConfig.helpHintPrompt) {
+    return "I'm not the right one to help with that — try asking Clawd!";
+  }
+
   try {
     const userMessage = code.trim()
       ? `Challenge: "${challengeTitle}"\nDescription: ${challengeDescription}\n\nPlayer's current code:\n\`\`\`dart\n${code}\n\`\`\``
@@ -377,7 +351,7 @@ async function callClaudeForHint(
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 512,
-      system: HELP_HINT_PROMPT,
+      system: botConfig.helpHintPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
 
@@ -393,12 +367,13 @@ async function callClaudeForHint(
 /** Shortcut: call Claude for a hint and publish it (used when no map is available). */
 async function sendHint(
   ctx: JobContext,
+  botConfig: BotConfig,
   requestId: string,
   challengeTitle: string,
   challengeDescription: string,
   code: string
 ): Promise<void> {
-  const hint = await callClaudeForHint(challengeTitle, challengeDescription, code);
+  const hint = await callClaudeForHint(botConfig, challengeTitle, challengeDescription, code);
 
   const payload = {
     type: "help-response",
@@ -417,6 +392,7 @@ async function sendHint(
 /** Handle a proactively detected stuck player: walk to terminal, send nudge, resume wandering. */
 async function handleProactiveApproach(
   ctx: JobContext,
+  botConfig: BotConfig,
   world: WorldState,
   wanderControllerRef: { current: AbortController },
   trackedPlayers: Map<string, PlayerTerminalState>,
@@ -439,7 +415,7 @@ async function handleProactiveApproach(
     console.warn("[Proactive] No map data, skipping approach");
     player.proactiveOffered = true;
     proactiveControllerRef.current = null;
-    wanderControllerRef.current = startWandering(ctx, world);
+    wanderControllerRef.current = startWandering(ctx, world, botConfig);
     return;
   }
 
@@ -473,7 +449,7 @@ async function handleProactiveApproach(
         );
 
         try {
-          await publishPath(ctx, points, directions);
+          await publishPath(ctx, points, directions, botConfig);
         } catch (err) {
           console.error("[Proactive] Failed to publish path:", err);
         }
@@ -484,7 +460,7 @@ async function handleProactiveApproach(
         if (!completed) {
           console.log("[Proactive] Walk aborted");
           proactiveControllerRef.current = null;
-          wanderControllerRef.current = startWandering(ctx, world);
+          wanderControllerRef.current = startWandering(ctx, world, botConfig);
           return;
         }
 
@@ -499,7 +475,7 @@ async function handleProactiveApproach(
   if (!trackedPlayers.has(player.playerId) || controller.signal.aborted) {
     console.log("[Proactive] Player left terminal or approach aborted, skipping nudge");
     proactiveControllerRef.current = null;
-    wanderControllerRef.current = startWandering(ctx, world);
+    wanderControllerRef.current = startWandering(ctx, world, botConfig);
     return;
   }
 
@@ -508,7 +484,7 @@ async function handleProactiveApproach(
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 256,
-      system: PROACTIVE_NUDGE_PROMPT,
+      system: botConfig.proactiveNudgePrompt,
       messages: [{
         role: "user",
         content: `Player name: ${player.playerName}\nChallenge title: "${player.challengeTitle}"`,
@@ -519,7 +495,7 @@ async function handleProactiveApproach(
     if (controller.signal.aborted || !trackedPlayers.has(player.playerId)) {
       console.log("[Proactive] Aborted during API call, skipping nudge");
       proactiveControllerRef.current = null;
-      wanderControllerRef.current = startWandering(ctx, world);
+      wanderControllerRef.current = startWandering(ctx, world, botConfig);
       return;
     }
 
@@ -533,7 +509,7 @@ async function handleProactiveApproach(
       type: "chat-response",
       id: `proactive-${player.playerId}-${Date.now()}`,
       text: nudgeText,
-      senderName: "Clawd",
+      senderName: botConfig.displayName,
       proactive: true,
       timestamp: new Date().toISOString(),
     };
@@ -555,14 +531,26 @@ async function handleProactiveApproach(
   // 8. Linger near the terminal for 10 seconds, then resume wandering
   await abortableSleep(10_000, controller.signal);
   proactiveControllerRef.current = null;
-  wanderControllerRef.current = startWandering(ctx, world);
+  wanderControllerRef.current = startWandering(ctx, world, botConfig);
+}
+
+/**
+ * Check whether this bot should respond to a chat message.
+ *
+ * - Clawd (default bot): responds to everything
+ * - Gremlin: only responds when addressed by name (case-insensitive)
+ */
+function shouldRespondToChat(botConfig: BotConfig, text: string): boolean {
+  if (botConfig.agentName === "clawd") return true;
+  // Name-addressed routing: respond only if message contains the bot's name
+  return text.toLowerCase().includes(botConfig.agentName);
 }
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
-    console.log("[Bot] Connecting to room...");
+    console.log(`[Bot] ${config.displayName} connecting to room...`);
     await ctx.connect();
-    console.log(`[Bot] Connected to room: ${ctx.room.name}`);
+    console.log(`[Bot] ${config.displayName} connected to room: ${ctx.room.name}`);
 
     const room = ctx.room;
 
@@ -579,11 +567,11 @@ export default defineAgent({
     let isBusy = false;
 
     // Publish initial position at default spawn so the client can render us.
-    await publishPosition(ctx, world);
+    await publishPosition(ctx, world, config);
 
     // Start the autonomous wandering loop (waits for map-info internally).
     // Wrapped in a ref so help-request handlers can abort and restart it.
-    const wanderControllerRef = { current: startWandering(ctx, world) };
+    const wanderControllerRef = { current: startWandering(ctx, world, config) };
 
     // Start the stuck detection loop for proactive pair-programming.
     const stuckDetectionController = startStuckDetection(
@@ -596,6 +584,7 @@ export default defineAgent({
         try {
           await handleProactiveApproach(
             ctx,
+            config,
             world,
             wanderControllerRef,
             trackedPlayers,
@@ -629,7 +618,7 @@ export default defineAgent({
         topic?: string
       ) => {
         // Ignore messages from ourselves
-        if (participant?.identity === "bot-claude") return;
+        if (participant?.identity === config.identity) return;
 
         const decoder = new TextDecoder();
 
@@ -660,7 +649,7 @@ export default defineAgent({
             );
 
             // Re-publish position at the correct spawn
-            publishPosition(ctx, world, world.map.cellSize).catch((err) =>
+            publishPosition(ctx, world, config, world.map.cellSize).catch((err) =>
               console.error("[Position] Failed to publish:", err)
             );
           } catch (error) {
@@ -707,6 +696,9 @@ export default defineAgent({
 
         // --- Help requests ---
         if (topic === "help-request") {
+          // Skip help requests if this bot doesn't provide hints
+          if (!config.helpHintPrompt) return;
+
           try {
             const message = JSON.parse(decoder.decode(payload));
 
@@ -725,7 +717,7 @@ export default defineAgent({
             }
 
             isBusy = true;
-            handleHelpRequest(ctx, world, wanderControllerRef, message)
+            handleHelpRequest(ctx, config, world, wanderControllerRef, message)
               .catch((error) => console.error("[Help] Error handling help request:", error))
               .finally(() => { isBusy = false; });
           } catch (error) {
@@ -753,10 +745,13 @@ export default defineAgent({
               return;
             }
 
+            // Name-addressed routing: check if this bot should respond
+            if (!shouldRespondToChat(config, text)) return;
+
             const challengeId = message.challengeId as string | undefined;
 
             // Handle asynchronously - don't await in event handler
-            handleChatMessage(ctx, messageHistory, senderId, senderName, messageId, text, challengeId).catch(
+            handleChatMessage(ctx, config, messageHistory, senderId, senderName, messageId, text, challengeId).catch(
               (error) => console.error("[Bot] Error handling message:", error)
             );
           } catch (error) {
@@ -776,7 +771,7 @@ export default defineAgent({
       trackedPlayers.delete(participant.identity);
     });
 
-    console.log("[Bot] Ready and listening for chat messages");
+    console.log(`[Bot] ${config.displayName} ready and listening for chat messages`);
 
     // Keep the agent running until the room disconnects.
     await disconnectPromise;
@@ -788,10 +783,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   cli.runApp(
     new WorkerOptions({
       agent: fileURLToPath(import.meta.url),
-      agentName: "clawd",
+      agentName: config.agentName,
       requestFunc: async (req) => {
-        // Accept with custom identity "bot-claude"
-        await req.accept("Clawd", "bot-claude");
+        await req.accept(config.displayName, config.identity);
       },
     })
   );
