@@ -1,18 +1,27 @@
-FROM node:20-slim
+## ── Build stage ──────────────────────────────
+FROM node:20-slim AS build
 
 WORKDIR /app
 
-# Copy package files
+COPY package*.json tsconfig.json ./
+RUN npm ci
+
+COPY src/ ./src/
+RUN npm run build
+
+## ── Runtime stage ────────────────────────────
+FROM node:20
+
+WORKDIR /app
+
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Install dependencies
-RUN npm ci --only=production
+COPY --from=build /app/dist/ ./dist/
 
-# Copy built files
-COPY dist/ ./dist/
-
-# Set environment variables (override at runtime)
 ENV NODE_ENV=production
 
-# Run the bot
+# Cloud Run requires a listening port
+EXPOSE 8080
+
 CMD ["node", "dist/index.js", "start"]
