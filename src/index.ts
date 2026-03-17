@@ -62,15 +62,6 @@ const DEFAULT_GRID_SIZE = 50;
 const DEFAULT_CELL_SIZE = 32;
 const DEFAULT_SPAWN = { x: 25, y: 25 };
 
-interface MapInfo {
-  mapId: string;
-  barriers: [number, number][];
-  terminals: [number, number][];
-  spawnPoint: { x: number; y: number };
-  gridSize: number;
-  cellSize: number;
-}
-
 /** Convert a mini-grid coordinate to pixel position. */
 function gridToPixel(
   gridX: number,
