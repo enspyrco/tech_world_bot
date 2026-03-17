@@ -1,10 +1,10 @@
 /**
- * Clawd's autonomous wandering behaviour.
+ * Autonomous wandering behaviour for bot characters.
  *
  * Picks random walkable destinations, pathfinds to them, publishes the full
  * path so the client can animate smooth movement, then pauses before repeating.
  *
- * The loop is cancellable via AbortController for Phase 4 (approach player).
+ * The loop is cancellable via AbortController (e.g. to approach a stuck player).
  */
 
 import type { JobContext } from "@livekit/agents";
@@ -15,6 +15,7 @@ import {
   pathToDirections,
   pathToPixels,
 } from "./pathfinding.js";
+import type { BotConfig } from "./bot-config.js";
 
 /** Tracks a player who currently has a terminal editor open. */
 export interface PlayerTerminalState {
@@ -43,28 +44,22 @@ export interface WorldState {
     gridSize: number;
     cellSize: number;
   } | null;
-  /** Clawd's current position in mini-grid coordinates. */
+  /** Bot's current position in mini-grid coordinates. */
   position: { x: number; y: number };
 }
 
 /** Movement timing — must match client's MoveToEffect duration. */
 export const STEP_DURATION_MS = 200;
 
-/** Pause range between walks (milliseconds). */
-const MIN_PAUSE_MS = 2_000;
-const MAX_PAUSE_MS = 5_000;
-
-/** Maximum path length to avoid very long walks. */
-const MAX_PATH_LENGTH = 20;
-
 /** Publish a full movement path on the `position` data channel. */
 export async function publishPath(
   ctx: JobContext,
   points: { x: number; y: number }[],
-  directions: DirectionName[]
+  directions: DirectionName[],
+  botConfig: BotConfig
 ): Promise<void> {
   const payload = {
-    playerId: "bot-claude",
+    playerId: botConfig.identity,
     points,
     directions,
   };
@@ -80,7 +75,8 @@ export async function publishPath(
 function pickRandomDestination(
   current: GridCell,
   barrierSet: Set<string>,
-  gridSize: number
+  gridSize: number,
+  maxPathLength: number
 ): GridCell | null {
   // Try up to 20 times to find a reachable destination
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -92,7 +88,7 @@ function pickRandomDestination(
 
     // Prefer destinations that aren't too far (keeps walks short and natural)
     const dist = Math.max(Math.abs(x - current.x), Math.abs(y - current.y));
-    if (dist > MAX_PATH_LENGTH) continue;
+    if (dist > maxPathLength) continue;
 
     return { x, y };
   }
@@ -120,11 +116,12 @@ export function abortableSleep(
 
 /**
  * Start the wandering loop. Returns the AbortController so callers can
- * cancel wandering (e.g. to approach a stuck player in Phase 4).
+ * cancel wandering (e.g. to approach a stuck player).
  */
 export function startWandering(
   ctx: JobContext,
-  world: WorldState
+  world: WorldState,
+  botConfig: BotConfig
 ): AbortController {
   const controller = new AbortController();
   const { signal } = controller;
@@ -148,11 +145,14 @@ export function startWandering(
     );
 
     while (!signal.aborted) {
+      const { minPauseMs, maxPauseMs, maxPathLength } = botConfig.wanderConfig;
+
       // Pick a random destination
       const dest = pickRandomDestination(
         world.position,
         barrierSet,
-        map.gridSize
+        map.gridSize,
+        maxPathLength
       );
 
       if (!dest) {
@@ -171,8 +171,8 @@ export function startWandering(
       }
 
       // Truncate long paths
-      const truncated = path.length > MAX_PATH_LENGTH
-        ? path.slice(0, MAX_PATH_LENGTH + 1)
+      const truncated = path.length > maxPathLength
+        ? path.slice(0, maxPathLength + 1)
         : path;
 
       const directions = pathToDirections(truncated);
@@ -186,7 +186,7 @@ export function startWandering(
 
       // Publish the full path for the client to animate
       try {
-        await publishPath(ctx, points, directions);
+        await publishPath(ctx, points, directions, botConfig);
       } catch (err) {
         console.error("[Wander] Failed to publish path:", err);
         await abortableSleep(2_000, signal);
@@ -204,7 +204,7 @@ export function startWandering(
 
       // Pause between walks (randomized for natural feel)
       const pause =
-        MIN_PAUSE_MS + Math.random() * (MAX_PAUSE_MS - MIN_PAUSE_MS);
+        minPauseMs + Math.random() * (maxPauseMs - minPauseMs);
       const pauseCompleted = await abortableSleep(pause, signal);
       if (!pauseCompleted) break;
     }
@@ -251,7 +251,7 @@ export function findAdjacentCell(
   return null;
 }
 
-/** Default time a player must be at a terminal before Clawd proactively offers help. */
+/** Default time a player must be at a terminal before the bot proactively offers help. */
 const DEFAULT_STUCK_THRESHOLD_MS = 120_000; // 2 minutes
 
 /** Default interval between stuck-detection checks. */
