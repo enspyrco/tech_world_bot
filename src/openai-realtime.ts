@@ -158,7 +158,6 @@ export class OpenAIRealtimeSession extends EventEmitter {
   private configureSession(): void {
     this.send("session.update", {
       session: {
-        type: "realtime",
         instructions: this.opts.systemPrompt,
         tools: this.opts.tools,
         tool_choice: "auto",
