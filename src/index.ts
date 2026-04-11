@@ -26,6 +26,7 @@ import {
 } from "./pathfinding.js";
 import { resolveBotConfig, type BotConfig } from "./bot-config.js";
 import { startHealthServer } from "./server.js";
+import { dreamfinderEntry } from "./dreamfinder-entry.js";
 
 // Resolve config from CLI args, BOT_NAME env var, or default to "clawd"
 const config = resolveBotConfig();
@@ -541,6 +542,12 @@ function shouldRespondToChat(botConfig: BotConfig, text: string): boolean {
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
+    // Dreamfinder has a separate entry point — voice via OpenAI Realtime,
+    // not text via Claude API. Dispatch early.
+    if (config.agentName === "dreamfinder") {
+      return dreamfinderEntry(ctx, config);
+    }
+
     console.log(`[Bot] ${config.displayName} connecting to room...`);
     await ctx.connect();
     console.log(`[Bot] ${config.displayName} connected to room: ${ctx.room.name}`);
