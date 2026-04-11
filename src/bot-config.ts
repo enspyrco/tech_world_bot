@@ -27,6 +27,7 @@ export interface BotConfig {
 
 import * as clawd from "./prompts/clawd.js";
 import * as gremlin from "./prompts/gremlin.js";
+import * as dreamfinder from "./prompts/dreamfinder.js";
 
 const configs: Record<string, BotConfig> = {
   clawd: {
@@ -57,6 +58,21 @@ const configs: Record<string, BotConfig> = {
       minPauseMs: 1_000,
       maxPauseMs: 3_000,
       maxPathLength: 25,
+    },
+  },
+  dreamfinder: {
+    agentName: "dreamfinder",
+    identity: "bot-dreamfinder",
+    displayName: "Dreamfinder",
+    systemPrompt: dreamfinder.SYSTEM_PROMPT,
+    challengeEvalPrompt: null,  // DF doesn't evaluate code challenges
+    helpHintPrompt: null,       // DF doesn't give code hints
+    proactiveNudgePrompt: dreamfinder.PROACTIVE_NUDGE_PROMPT,
+    respondsToAll: false,       // Voice-only — responds via audio, not chat data channel
+    wanderConfig: {
+      minPauseMs: 3_000,        // Unhurried facilitator pace
+      maxPauseMs: 8_000,
+      maxPathLength: 12,
     },
   },
 };
