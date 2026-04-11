@@ -58,7 +58,7 @@ export class OpenAIRealtimeSession extends EventEmitter {
       model: opts.model ?? REALTIME_MODEL,
       systemPrompt: opts.systemPrompt,
       tools: opts.tools,
-      voice: opts.voice ?? "fable",
+      voice: opts.voice ?? "ash",
       silenceDurationMs: opts.silenceDurationMs ?? 1200,
     };
   }

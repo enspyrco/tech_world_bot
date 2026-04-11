@@ -95,7 +95,7 @@ export async function dreamfinderEntry(
     apiKey,
     systemPrompt: config.systemPrompt,
     tools: TOOL_DEFINITIONS,
-    voice: "fable",
+    voice: "ash",
     silenceDurationMs: 1200,
   });
 
