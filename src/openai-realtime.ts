@@ -161,19 +161,13 @@ export class OpenAIRealtimeSession extends EventEmitter {
         instructions: this.opts.systemPrompt,
         tools: this.opts.tools,
         tool_choice: "auto",
+        voice: this.opts.voice,
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
         turn_detection: {
           type: "server_vad",
           threshold: 0.5,
           silence_duration_ms: this.opts.silenceDurationMs,
-        },
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: SAMPLE_RATE },
-          },
-          output: {
-            format: { type: "audio/pcm", rate: SAMPLE_RATE },
-            voice: this.opts.voice,
-          },
         },
       },
     });
