@@ -21,19 +21,19 @@ npm run lint                   # ESLint
 - `src/prompts/clawd.ts`: Clawd personality prompts
 - `src/prompts/gremlin.ts`: Gremlin personality prompts
 - `src/agent-loop.ts`: Autonomous wandering and stuck detection
-- `src/server.ts`: HTTP health server for Cloud Run
-- `Dockerfile`: Multi-stage build for Cloud Run deployment
-- `.env`: Environment variables (see Configuration)
+- `src/server.ts`: HTTP health server (used by the Docker healthcheck on OCI)
+- `Dockerfile`: Multi-stage Node 20 build — runs in Docker on OCI
+- `.env`: Environment variables for local dev (see Configuration). Production secrets live in `imagineering-infra/tech-world-bots/secrets.yaml` (sops-encrypted).
 
 ## Architecture
 
 Uses `@livekit/agents` framework (v1.0+):
-1. Registers as a named worker with LiveKit Cloud (`agentName` from config)
+1. Registers as a named worker with the self-hosted LiveKit (`wss://livekit.imagineering.cc`, also on OCI; `agentName` from config)
 2. Receives job dispatch when a user joins a room (see Agent Dispatch below)
 3. Joins room as participant (e.g., `bot-claude` or `bot-gremlin`)
-4. Listens for `chat`, `help-request`, `map-info`, and `terminal-activity` data messages
+4. Listens for `chat`, `help-request`, `map-info`, `terminal-activity`, and `oracle-request` data messages
 5. Calls Claude API with conversation history
-6. Publishes responses on `chat-response` and `help-response` topics
+6. Publishes responses on `chat-response`, `help-response`, and `oracle-response` topics
 7. Autonomously wanders the game world using A* pathfinding
 8. Proactively approaches stuck players to offer help
 
@@ -50,29 +50,32 @@ Bot selection: `--bot=<name>` CLI arg → `BOT_NAME` env var → defaults to `cl
 LiveKit dispatches bots via **token-based dispatch**: the Firebase Cloud Function (`retrieveLiveKitToken`) embeds `RoomAgentDispatch` entries for both `clawd` and `gremlin` in every user's access token.
 
 **If a bot isn't being dispatched:**
-1. Check Cloud Run logs — look for `"registered worker"` and `"received job request"`.
-2. If worker registers but no dispatch, check `@livekit/agents` SDK compatibility.
-3. Manual dispatch (emergency): `lk dispatch create --agent-name clawd --room <room-name>`
+1. Check container logs on OCI: `ssh nick@149.118.69.221 docker logs --tail 100 tw-clawd` — look for `"registered worker"` and `"received job request"`.
+2. Confirm the container is actually up: `ssh nick@149.118.69.221 docker ps | grep tw-`. Containers: `tw-clawd`, `tw-gremlin`, and (when active) `tw-dreamfinder`.
+3. If worker registers but no dispatch, check `@livekit/agents` SDK compatibility.
+4. Manual dispatch (emergency): `lk dispatch create --agent-name clawd --room <room-name>`
 
 ### Deployment
 
-Deployed as two Cloud Run services (one per bot) with scale-to-zero:
+**Production runs on OCI** (`149.118.69.221`) as Docker containers — `tw-clawd`, `tw-gremlin`, and (when active) `tw-dreamfinder`. Cloud Run was tried briefly but is no longer used; ignore any stale references to `gcloud builds submit` / `gcloud run deploy`.
+
+Deploy via the `imagineering-infra` script:
 
 ```bash
-# Build and push image
-gcloud builds submit --tag gcr.io/adventures-in-tech-world-0/tech-world-bot
-
-# Deploy (same image, different BOT_NAME)
-gcloud run deploy clawd-bot --image gcr.io/..../tech-world-bot \
-  --set-env-vars "BOT_NAME=clawd" --min-instances 0 --max-instances 1 \
-  --no-cpu-throttling --timeout 3600
-
-gcloud run deploy gremlin-bot --image gcr.io/..../tech-world-bot \
-  --set-env-vars "BOT_NAME=gremlin" --min-instances 0 --max-instances 1 \
-  --no-cpu-throttling --timeout 3600
+cd ~/git/orgs/imagineering/imagineering-infra
+./scripts/deploy-to.sh 149.118.69.221 tech-world-bots
 ```
 
-The Cloud Function wakes both services on user join. `--no-cpu-throttling` keeps the WebSocket and wandering loop alive between HTTP requests.
+The script: decrypts `tech-world-bots/secrets.yaml` via sops → generates `.env` on the VPS → rsyncs source + `docker-compose.yml` → builds the Docker image on the VPS → restarts the containers.
+
+The bots are long-running workers that hold a WebSocket to LiveKit; there is no scale-to-zero. Containers auto-restart via Docker `restart: unless-stopped`.
+
+**Verifying a deploy:**
+1. `ssh nick@149.118.69.221 docker ps | grep tw-` — confirm containers running
+2. `ssh nick@149.118.69.221 docker logs --tail 50 tw-clawd` — look for `"registered worker"`
+3. Trigger a dispatch (user joins room) and watch for `"received job request"`
+
+**Production safety:** the imagineering-infra `CLAUDE.md` warns against repeated/rapid commands on the VPS — be deliberate.
 
 ## Data Channel Protocol
 

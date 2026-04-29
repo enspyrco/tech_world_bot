@@ -44,10 +44,21 @@ Clawd joins LiveKit rooms as a participant and responds to chat messages using C
 
 ## Tech Stack
 
-- **Runtime:** Node.js 20+
-- **Framework:** [@livekit/agents](https://docs.livekit.io/agents/)
+- **Runtime:** Node.js 20+ in Docker, deployed on OCI (`149.118.69.221`)
+- **Framework:** [@livekit/agents](https://docs.livekit.io/agents/) — connects to self-hosted LiveKit at `wss://livekit.imagineering.cc`
 - **AI:** Claude API via [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript)
 - **Language:** TypeScript
+
+## Deploy
+
+Production deploys via the `imagineering-infra` repo:
+
+```bash
+cd ~/git/orgs/imagineering/imagineering-infra
+./scripts/deploy-to.sh 149.118.69.221 tech-world-bots
+```
+
+This decrypts secrets, rsyncs source, builds the Docker image on the VPS, and restarts the `tw-clawd` / `tw-gremlin` containers. See `CLAUDE.md` for verification steps after a deploy.
 
 ## Scripts
 
