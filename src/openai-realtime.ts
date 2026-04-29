@@ -12,7 +12,6 @@ import { EventEmitter } from "node:events";
 import WebSocket from "ws";
 
 const REALTIME_MODEL = "gpt-4o-realtime-preview-2025-06-03";
-const SAMPLE_RATE = 24000;
 
 export interface RealtimeToolDef {
   type: "function";

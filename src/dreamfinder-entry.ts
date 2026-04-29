@@ -17,7 +17,6 @@ import {
   type RemoteParticipant,
   type RemoteAudioTrack,
   type RemoteTrackPublication,
-  type TrackPublication,
   TrackKind,
 } from "@livekit/rtc-node";
 import {
