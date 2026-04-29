@@ -361,6 +361,82 @@ async function callClaudeForHint(
   }
 }
 
+// --- Oracle (generic bot-mediated generation channel) ---
+
+/**
+ * Handle an `oracle-request` from the Flutter client. The request shape is:
+ *   { requestId: string, kind: string, context: object }
+ *
+ * Phase 2 supports `kind: 'cast_no_match'` only — when a player speaks a
+ * word that doesn't match any known WordId, we generate a short flavor
+ * line via Claude. Phase 3 will add `kind: 'spell_combo'` against the
+ * same channel for novel-combination interpretation.
+ *
+ * The reply goes on `oracle-response` targeted to the requester:
+ *   { requestId: string, text: string }
+ *
+ * On any failure, we silently drop — the Flutter client falls back to
+ * a hand-crafted line after its 5s timeout, so flavor is best-effort.
+ */
+async function handleOracleRequest(
+  ctx: JobContext,
+  botConfig: BotConfig,
+  requestId: string,
+  senderId: string,
+  kind: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  if (kind !== "cast_no_match") {
+    console.warn(`[Oracle] Unsupported kind "${kind}" for ${requestId}; ignoring`);
+    return;
+  }
+  if (!botConfig.oracleNoMatchPrompt) {
+    console.log(`[Oracle] ${botConfig.displayName} doesn't oracle, skipping`);
+    return;
+  }
+
+  const transcript = typeof context.transcript === "string"
+    ? context.transcript
+    : undefined;
+
+  console.log(
+    `[Oracle] no-match ${requestId} from ${senderId}, ` +
+      `transcript: ${transcript ? `"${transcript}"` : "(none)"}`
+  );
+
+  try {
+    const userMessage = transcript
+      ? `The player said: "${transcript}"`
+      : `The player tried to cast but no transcript was captured.`;
+
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 64,
+      system: botConfig.oracleNoMatchPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    });
+
+    const text = extractText(response).trim();
+    if (!text) {
+      console.warn(`[Oracle] Empty text for ${requestId}; not replying`);
+      return;
+    }
+
+    const payload = { requestId, text };
+    const encoder = new TextEncoder();
+    await ctx.agent?.publishData(encoder.encode(JSON.stringify(payload)), {
+      topic: "oracle-response",
+      destination_identities: [senderId],
+      reliable: true,
+    });
+
+    console.log(`[Oracle] Replied ${requestId}: "${text}"`);
+  } catch (error) {
+    console.error(`[Oracle] Failed for ${requestId}:`, error);
+    // Silent — Flutter falls back on timeout.
+  }
+}
+
 /** Shortcut: call Claude for a hint and publish it (used when no map is available). */
 async function sendHint(
   ctx: JobContext,
@@ -728,6 +804,32 @@ export default defineAgent({
               .finally(() => { isBusy = false; });
           } catch (error) {
             console.error("[Help] Error parsing help-request:", error);
+          }
+          return;
+        }
+
+        // --- Oracle (generic bot-mediated generation) ---
+        if (topic === "oracle-request") {
+          if (!config.oracleNoMatchPrompt) return;
+          try {
+            const message = JSON.parse(decoder.decode(payload));
+            const requestId = message.requestId as string;
+            const kind = message.kind as string;
+            const context = (message.context ?? {}) as Record<string, unknown>;
+            const senderId = participant?.identity;
+
+            if (!requestId || !kind || !senderId) {
+              console.warn("[Oracle] Malformed oracle-request:", message);
+              return;
+            }
+
+            // Fire-and-forget — don't block the data-received event loop.
+            handleOracleRequest(ctx, config, requestId, senderId, kind, context)
+              .catch((err) =>
+                console.error("[Oracle] Error handling oracle-request:", err)
+              );
+          } catch (error) {
+            console.error("[Oracle] Error parsing oracle-request:", error);
           }
           return;
         }
