@@ -36,11 +36,12 @@ Clawd joins LiveKit rooms as a participant and responds to chat messages using C
 ## How it works
 
 1. Bot registers as a LiveKit Agent worker
-2. When a room is created, LiveKit dispatches a job to the bot
+2. The Flutter client calls the `retrieveLiveKitToken` Cloud Function, which embeds a `RoomAgentDispatch` in the token's `RoomConfiguration` — this ensures the bot is dispatched whether the room is new or already exists
 3. Bot joins the room as participant `bot-claude`
 4. Players send messages on the `chat` data channel topic
 5. Bot calls Claude API and responds on `chat-response` topic
 6. All players in the room see the response
+7. For spell casting, the client sends on `oracle-request` (targeted); the bot interprets the cast and replies on `oracle-response` using a `kind` discriminator (`'spell_cast'`, `'spell_combo'`, …)
 
 ## Tech Stack
 
