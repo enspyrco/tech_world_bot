@@ -132,17 +132,34 @@ export async function dreamfinderEntry(
     }
   });
 
-  // --- Mood extraction → data channel ---
+  // --- Mood + speech bubbles → data channel ---
   const encoder = new TextEncoder();
-  session.on("transcript", (_text, mood) => {
+  session.on("transcript", (text, mood) => {
     if (mood) {
       ctx.room.localParticipant
         ?.publishData(
           encoder.encode(JSON.stringify({ botId: config.identity, mood })),
           { topic: "bot-mood", reliable: false },
         )
-        .catch(() => {}); // fire-and-forget
+        .catch(() => {});
     }
+    if (text) {
+      ctx.room.localParticipant
+        ?.publishData(
+          encoder.encode(JSON.stringify({ speaker: "dreamfinder", text })),
+          { topic: "speech-transcript", reliable: true },
+        )
+        .catch(() => {});
+    }
+  });
+
+  session.on("user_transcript", (text) => {
+    ctx.room.localParticipant
+      ?.publishData(
+        encoder.encode(JSON.stringify({ speaker: "user", text })),
+        { topic: "speech-transcript", reliable: true },
+      )
+      .catch(() => {});
   });
 
   // --- Position publishing + wandering ---
