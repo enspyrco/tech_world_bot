@@ -34,6 +34,8 @@ export interface OpenAIRealtimeEvents {
   audio: [pcm16: Int16Array];
   /** Transcript of the model's spoken response, with optional mood tag. */
   transcript: [text: string, mood: string | null];
+  /** Transcript of the user's spoken input (from Whisper via Realtime API). */
+  user_transcript: [text: string];
   /** Tool/function call request from the model. */
   tool_call: [name: string, args: string, callId: string];
   /** Response generation complete. */
@@ -163,6 +165,7 @@ export class OpenAIRealtimeSession extends EventEmitter {
         voice: this.opts.voice,
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
+        input_audio_transcription: { model: "whisper-1" },
         turn_detection: {
           type: "server_vad",
           threshold: 0.5,
@@ -188,6 +191,12 @@ export class OpenAIRealtimeSession extends EventEmitter {
         const text = (msg.transcript as string) ?? "";
         const { mood, cleanText } = parseMoodTag(text);
         this.emit("transcript", cleanText, mood);
+        break;
+      }
+
+      case "conversation.item.input_audio_transcription.completed": {
+        const text = (msg.transcript as string) ?? "";
+        if (text.trim()) this.emit("user_transcript", text.trim());
         break;
       }
 
