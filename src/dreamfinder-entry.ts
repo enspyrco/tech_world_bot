@@ -27,6 +27,8 @@ import type { BotConfig } from "./bot-config.js";
 import { OpenAIRealtimeSession } from "./openai-realtime.js";
 import { DreamfinderAudioPipeline } from "./audio-pipeline.js";
 import { TOOL_DEFINITIONS } from "./prompts/dreamfinder.js";
+import { LiveKitTopics } from "./livekit-topics.js";
+import { handleAgentHello } from "./agent-hello.js";
 
 const DEFAULT_SPAWN = { x: 25, y: 25 };
 const DEFAULT_GRID_SIZE = 50;
@@ -172,6 +174,11 @@ export async function dreamfinderEntry(
     (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
       if (participant?.identity === config.identity) return;
       const decoder = new TextDecoder();
+
+      if (topic === LiveKitTopics.AGENT_HELLO) {
+        handleAgentHello(participant?.identity, payload);
+        return;
+      }
 
       if (topic === "map-info") {
         try {
