@@ -28,6 +28,8 @@ import { resolveBotConfig, type BotConfig } from "./bot-config.js";
 import { startHealthServer } from "./server.js";
 import { dreamfinderEntry } from "./dreamfinder-entry.js";
 import { attachAdaptiveStreamDetector } from "./adaptive-stream-detector.js";
+import { LiveKitTopics } from "./livekit-topics.js";
+import { handleAgentHello } from "./agent-hello.js";
 
 // Resolve config from CLI args, BOT_NAME env var, or default to "clawd"
 const config = resolveBotConfig();
@@ -698,6 +700,12 @@ export default defineAgent({
         if (participant?.identity === config.identity) return;
 
         const decoder = new TextDecoder();
+
+        // --- Agent hello (one-shot client self-report on join) ---
+        if (topic === LiveKitTopics.AGENT_HELLO) {
+          handleAgentHello(participant?.identity, payload);
+          return;
+        }
 
         // --- Map info from client ---
         if (topic === "map-info") {
