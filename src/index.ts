@@ -27,6 +27,7 @@ import {
 import { resolveBotConfig, type BotConfig } from "./bot-config.js";
 import { startHealthServer } from "./server.js";
 import { dreamfinderEntry } from "./dreamfinder-entry.js";
+import { attachAdaptiveStreamDetector } from "./adaptive-stream-detector.js";
 
 // Resolve config from CLI args, BOT_NAME env var, or default to "clawd"
 const config = resolveBotConfig();
@@ -869,6 +870,11 @@ export default defineAgent({
       }
     );
 
+    // Detect clients connected with `adaptiveStream: true` — Flame canvas
+    // doesn't signal demand to the SFU, so adaptiveStream causes silent
+    // video loss. See src/adaptive-stream-detector.ts for details.
+    const detachAdaptiveStreamDetector = attachAdaptiveStreamDetector(room);
+
     // Log when participants join/leave
     room.on(RoomEvent.ParticipantConnected, (participant) => {
       console.log(`[Bot] Participant joined: ${participant.identity}`);
@@ -881,8 +887,15 @@ export default defineAgent({
 
     console.log(`[Bot] ${config.displayName} ready and listening for chat messages`);
 
-    // Keep the agent running until the room disconnects.
-    await disconnectPromise;
+    // Keep the agent running until the room disconnects. Detacher MUST run
+    // even on abnormal disconnect (rejection from the await), otherwise the
+    // detector retains room listeners, timers, and VideoStream readers for
+    // the lifetime of the worker process.
+    try {
+      await disconnectPromise;
+    } finally {
+      detachAdaptiveStreamDetector();
+    }
   },
 });
 
