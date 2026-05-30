@@ -887,9 +887,15 @@ export default defineAgent({
 
     console.log(`[Bot] ${config.displayName} ready and listening for chat messages`);
 
-    // Keep the agent running until the room disconnects.
-    await disconnectPromise;
-    detachAdaptiveStreamDetector();
+    // Keep the agent running until the room disconnects. Detacher MUST run
+    // even on abnormal disconnect (rejection from the await), otherwise the
+    // detector retains room listeners, timers, and VideoStream readers for
+    // the lifetime of the worker process.
+    try {
+      await disconnectPromise;
+    } finally {
+      detachAdaptiveStreamDetector();
+    }
   },
 });
 

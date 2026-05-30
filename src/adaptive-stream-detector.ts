@@ -98,7 +98,16 @@ export function attachAdaptiveStreamDetector(
   const states = new Map<string, ParticipantState>();
   const streamReaders = new Map<string, AbortController>(); // keyed by trackSid
 
+  // Bot / agent identities publish via canvas pipelines that are subject to
+  // their own outages (Dreamfinder's Three.js iframe, Anthropic credit
+  // exhaustion, etc.). Treating them like regular participants produces
+  // false-positive adaptive_stream_warnings whenever their independent
+  // pipeline is misbehaving. Skip them.
+  const isBotIdentity = (identity: string): boolean =>
+    identity.startsWith("agent-") || identity.startsWith("bot-");
+
   const onParticipantConnected = (participant: RemoteParticipant) => {
+    if (isBotIdentity(participant.identity)) return;
     states.set(participant.identity, {
       identity: participant.identity,
       receivedAnyFrame: false,
@@ -148,7 +157,13 @@ export function attachAdaptiveStreamDetector(
             `(track ${sid}) — subscriber path healthy.`
         );
       }
-    );
+    ).finally(() => {
+      // Drop the controller from the outer map once the reader resolves,
+      // regardless of whether it observed a frame, was aborted, or failed
+      // to open. Without this, participants that re-publish video tracks
+      // over a long-lived bot session accumulate stale entries.
+      streamReaders.delete(sid);
+    });
 
     // Arm the timer on the FIRST video track only. Late-added tracks reuse
     // the existing timer; if any track delivered a frame already, no timer.
@@ -176,6 +191,15 @@ export function attachAdaptiveStreamDetector(
   room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
   room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
   room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+
+  // Seed state from participants who joined the room BEFORE the bot
+  // attached (the common case under token-based agent dispatch: the bot
+  // joins after the user is already present). Without this, the detector
+  // is blind to those participants and their later TrackSubscribed events
+  // silently no-op because `states.get()` returns undefined.
+  for (const participant of room.remoteParticipants.values()) {
+    onParticipantConnected(participant);
+  }
 
   return () => {
     room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
