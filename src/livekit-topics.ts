@@ -26,9 +26,11 @@ export const LiveKitTopics = {
    *     userAgent: string | null,  // web only
    *   }
    *
-   * Wire string is snake_case (deliberate — agent-inbound channel naming).
+   * Wire string follows the kebab-case convention used by every other
+   * topic in the Flutter-side LiveKitTopic enum (`map-info`, `door-unlock`,
+   * `chat-response`, …).
    */
-  AGENT_HELLO: "agent_hello",
+  AGENT_HELLO: "agent-hello",
 } as const;
 
 export type LiveKitTopic = (typeof LiveKitTopics)[keyof typeof LiveKitTopics];
