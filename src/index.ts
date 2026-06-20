@@ -58,7 +58,11 @@ function parseChallengeResult(text: string): {
   }
 }
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({
+  // Max plan via direct-Bearer OAuth (zero marginal cost), never a metered key.
+  authToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+  defaultHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+});
 
 /** Safely extract text from an Anthropic API response. */
 function extractText(response: Anthropic.Message): string {
