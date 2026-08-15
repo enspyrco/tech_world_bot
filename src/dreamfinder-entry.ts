@@ -21,8 +21,13 @@ import {
 } from "@livekit/rtc-node";
 import {
   startWandering,
+  cellInTerritory,
+  parseTerritory,
+  territoryCenter,
+  nearestWalkableCell,
   type WorldState,
 } from "./agent-loop.js";
+import { buildBarrierSet } from "./pathfinding.js";
 import type { BotConfig } from "./bot-config.js";
 import { OpenAIRealtimeSession } from "./openai-realtime.js";
 import { DreamfinderAudioPipeline } from "./audio-pipeline.js";
@@ -34,7 +39,10 @@ const DEFAULT_SPAWN = { x: 25, y: 25 };
 const DEFAULT_GRID_SIZE = 50;
 const DEFAULT_CELL_SIZE = 32;
 
-/** Audio proximity threshold in grid squares (matches client-side). */
+/**
+ * Fallback audio range in grid cells, used only until DF's territory arrives
+ * via map-info. Once a territory is set, square membership governs hearing.
+ */
 const AUDIO_RANGE = 2;
 
 /** Publish bot's current position on the data channel. */
@@ -68,6 +76,34 @@ function chebyshevDistance(
   b: { x: number; y: number },
 ): number {
   return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+/**
+ * Whether a player at [pixelPos] is standing inside Dreamfinder's square.
+ *
+ * The `position` wire format is PIXELS (cell × cellSize), while the territory
+ * is in cells — so convert first. (The former gate compared pixel player
+ * positions directly against DF's cell position, so it almost never matched:
+ * DF effectively heard no one.)
+ *
+ * Until the territory arrives via map-info, fall back to a small Chebyshev
+ * radius around DF (both in cells) so there is no deaf window.
+ */
+function isPlayerInTerritory(
+  pixelPos: { x: number; y: number },
+  world: WorldState,
+): boolean {
+  const cellSize = world.map?.cellSize ?? DEFAULT_CELL_SIZE;
+  // Floor (not round) to match the client's cell identity (`px ~/ cellSize`), so
+  // a player on a boundary tile is quantised to the same cell on both sides.
+  const cell = {
+    x: Math.floor(pixelPos.x / cellSize),
+    y: Math.floor(pixelPos.y / cellSize),
+  };
+  if (world.territory) {
+    return cellInTerritory(cell.x, cell.y, world.territory);
+  }
+  return chebyshevDistance(cell, world.position) <= AUDIO_RANGE;
 }
 
 /**
@@ -191,9 +227,42 @@ export async function dreamfinderEntry(
             gridSize: (msg.gridSize as number) || DEFAULT_GRID_SIZE,
             cellSize: (msg.cellSize as number) || DEFAULT_CELL_SIZE,
           };
-          world.position = { ...world.map.spawnPoint };
-          console.log(`[DF] Map: ${world.map.mapId} (${world.map.barriers.length} barriers)`);
+          // Keep the last valid territory if a packet is malformed/absent (e.g.
+          // an old client mid-cutover) rather than widening hearing back to the
+          // radius fallback — the client always ships a resolved rect, so a null
+          // here means a broken contract, not a legitimate "no territory".
+          world.territory =
+            parseTerritory(msg.dreamfinderTerritory) ?? world.territory ?? null;
+          // Bump the map generation so any in-flight wander stride refuses to
+          // commit its (now stale) end position over the re-seat below.
+          world.mapGeneration = (world.mapGeneration ?? 0) + 1;
+          // Seat DF inside his square (centre, snapped to a walkable cell) so he
+          // starts in his territory rather than at the player spawn — otherwise
+          // every in-square wander target is out of reach and he never walks in.
+          if (world.territory) {
+            const barrierSet = buildBarrierSet(world.map.barriers);
+            world.position = nearestWalkableCell(
+              territoryCenter(world.territory),
+              barrierSet,
+              world.map.gridSize,
+              world.territory,
+            );
+          } else {
+            world.position = { ...world.map.spawnPoint };
+          }
+          console.log(
+            `[DF] Map: ${world.map.mapId} (${world.map.barriers.length} barriers)` +
+              (world.territory
+                ? `, territory [${world.territory.minX},${world.territory.minY}]–` +
+                  `[${world.territory.maxX},${world.territory.maxY}]`
+                : ""),
+          );
           publishPosition(ctx, world, config, world.map.cellSize).catch(() => {});
+          // The territory (and DF's position) just changed — re-evaluate who is
+          // in the square NOW, rather than waiting for each player's next
+          // (unreliable) position packet. Keeps the drawn box and the ear in
+          // sync across a map switch.
+          updateProximityAudio(room, pipeline, world);
         } catch (err) {
           console.error("[DF] map-info parse error:", err);
         }
@@ -224,9 +293,9 @@ export async function dreamfinderEntry(
       if (publication.kind !== TrackKind.KIND_AUDIO) return;
       if (participant.identity === config.identity) return;
 
-      // Check if this participant is within audio range
+      // Only hear this participant if they're standing in DF's square.
       const pos = playerPositions.get(participant.identity);
-      if (pos && chebyshevDistance(pos, world.position) <= AUDIO_RANGE) {
+      if (pos && isPlayerInTerritory(pos, world)) {
         pipeline.addParticipant(participant.identity, track);
       }
     },
@@ -277,11 +346,11 @@ function updateProximityAudio(
   world: WorldState,
 ): void {
   for (const [identity, pos] of playerPositions) {
-    const dist = chebyshevDistance(pos, world.position);
+    const inSquare = isPlayerInTerritory(pos, world);
     const isActive = pipeline.activeParticipants.includes(identity);
 
-    if (dist <= AUDIO_RANGE && !isActive) {
-      // Player entered range — find their audio track and add to pipeline
+    if (inSquare && !isActive) {
+      // Player entered the square — find their audio track and add to pipeline
       const participant = room.remoteParticipants.get(identity);
       if (!participant) continue;
 
@@ -291,8 +360,8 @@ function updateProximityAudio(
           break;
         }
       }
-    } else if (dist > AUDIO_RANGE && isActive) {
-      // Player left range — remove from pipeline
+    } else if (!inSquare && isActive) {
+      // Player left the square — remove from pipeline
       pipeline.removeParticipant(identity);
     }
   }
