@@ -227,7 +227,12 @@ export async function dreamfinderEntry(
             gridSize: (msg.gridSize as number) || DEFAULT_GRID_SIZE,
             cellSize: (msg.cellSize as number) || DEFAULT_CELL_SIZE,
           };
-          world.territory = parseTerritory(msg.dreamfinderTerritory);
+          // Keep the last valid territory if a packet is malformed/absent (e.g.
+          // an old client mid-cutover) rather than widening hearing back to the
+          // radius fallback — the client always ships a resolved rect, so a null
+          // here means a broken contract, not a legitimate "no territory".
+          world.territory =
+            parseTerritory(msg.dreamfinderTerritory) ?? world.territory ?? null;
           // Bump the map generation so any in-flight wander stride refuses to
           // commit its (now stale) end position over the re-seat below.
           world.mapGeneration = (world.mapGeneration ?? 0) + 1;
