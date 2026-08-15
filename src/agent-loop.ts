@@ -126,6 +126,12 @@ export interface WorldState {
    * for other bots (Clawd), which roam the whole map.
    */
   territory?: TerritoryRect | null;
+  /**
+   * Incremented on every map-info. The wander loop captures it before a stride
+   * and refuses to commit the stride's end position if it changed mid-walk — so
+   * a stale path computed against the old map can't undo a map-switch re-seat.
+   */
+  mapGeneration?: number;
 }
 
 /** Movement timing — must match client's MoveToEffect duration. */
@@ -308,6 +314,10 @@ export function startWandering(
           `(${directions.length} steps)`
       );
 
+      // Snapshot the map generation: if a map switch reseats DF mid-stride, we
+      // must NOT commit this (now stale) stride's end position over the re-seat.
+      const strideGen = world.mapGeneration ?? 0;
+
       // Publish the full path for the client to animate
       try {
         await publishPath(ctx, points, directions, botConfig);
@@ -322,7 +332,10 @@ export function startWandering(
       const completed = await abortableSleep(moveDuration, signal);
       if (!completed) break;
 
-      // Update our position to the end of the path
+      // Commit the end position — unless a map switch happened during the walk,
+      // in which case map-info already reseated world.position and this stale
+      // path's endpoint (an old-map cell) must not overwrite it.
+      if ((world.mapGeneration ?? 0) !== strideGen) continue;
       const end = truncated[truncated.length - 1];
       world.position = { x: end.x, y: end.y };
 

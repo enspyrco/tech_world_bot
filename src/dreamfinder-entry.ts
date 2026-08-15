@@ -228,6 +228,9 @@ export async function dreamfinderEntry(
             cellSize: (msg.cellSize as number) || DEFAULT_CELL_SIZE,
           };
           world.territory = parseTerritory(msg.dreamfinderTerritory);
+          // Bump the map generation so any in-flight wander stride refuses to
+          // commit its (now stale) end position over the re-seat below.
+          world.mapGeneration = (world.mapGeneration ?? 0) + 1;
           // Seat DF inside his square (centre, snapped to a walkable cell) so he
           // starts in his territory rather than at the player spawn — otherwise
           // every in-square wander target is out of reach and he never walks in.
