@@ -60,8 +60,14 @@ export function cellInTerritory(
 /** Parse the wire form `[minX, minY, maxX, maxY]` from map-info. */
 export function parseTerritory(wire: unknown): TerritoryRect | null {
   if (!Array.isArray(wire) || wire.length !== 4) return null;
-  const [minX, minY, maxX, maxY] = wire.map((n) => Math.round(Number(n)));
-  if ([minX, minY, maxX, maxY].some((n) => Number.isNaN(n))) return null;
+  // Validate element TYPES before coercing — `Number(null)`, `Number("")`,
+  // `Number(false)`, `Number([])` all coerce to 0 (not NaN), so a bare
+  // Number.isNaN check would silently accept malformed wire as a zeros-square.
+  // Match the Dart TerritoryRect.tryParse contract: non-finite-number → null.
+  if (!wire.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    return null;
+  }
+  const [minX, minY, maxX, maxY] = wire.map((n) => Math.round(n as number));
   return { minX, minY, maxX, maxY };
 }
 
