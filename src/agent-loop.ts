@@ -34,6 +34,72 @@ export interface PlayerTerminalState {
   helpRequestActive: boolean;
 }
 
+/**
+ * Dreamfinder's square, in mini-grid cells (inclusive bounds).
+ *
+ * Resolved on the client and shipped verbatim over `map-info`, so the bot's
+ * wander bound and audio gate read the same box the client draws — the drawn
+ * zone, the walk, and who DF hears can never drift apart.
+ */
+export interface TerritoryRect {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** Whether cell (x, y) lies inside the territory (inclusive). */
+export function cellInTerritory(
+  x: number,
+  y: number,
+  rect: TerritoryRect,
+): boolean {
+  return x >= rect.minX && x <= rect.maxX && y >= rect.minY && y <= rect.maxY;
+}
+
+/** Parse the wire form `[minX, minY, maxX, maxY]` from map-info. */
+export function parseTerritory(wire: unknown): TerritoryRect | null {
+  if (!Array.isArray(wire) || wire.length !== 4) return null;
+  const [minX, minY, maxX, maxY] = wire.map((n) => Math.round(Number(n)));
+  if ([minX, minY, maxX, maxY].some((n) => Number.isNaN(n))) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/** Centre cell (integer-floored) of a territory rect. */
+export function territoryCenter(rect: TerritoryRect): GridCell {
+  return {
+    x: (rect.minX + rect.maxX) >> 1,
+    y: (rect.minY + rect.maxY) >> 1,
+  };
+}
+
+/**
+ * Nearest non-barrier cell to `center`, searched in expanding Chebyshev rings
+ * and clamped to the grid. Mirrors the client's spawn snap so bot and client
+ * seat Dreamfinder on the same cell.
+ */
+export function nearestWalkableCell(
+  center: GridCell,
+  barrierSet: Set<string>,
+  gridSize: number,
+): GridCell {
+  const free = (x: number, y: number) =>
+    x >= 0 && x < gridSize && y >= 0 && y < gridSize &&
+    !barrierSet.has(`${x},${y}`);
+  if (free(center.x, center.y)) return { x: center.x, y: center.y };
+  for (let r = 1; r < gridSize; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        if (free(center.x + dx, center.y + dy)) {
+          return { x: center.x + dx, y: center.y + dy };
+        }
+      }
+    }
+  }
+  return { x: center.x, y: center.y };
+}
+
 /** Mutable world state — shared with index.ts. */
 export interface WorldState {
   map: {
@@ -46,6 +112,11 @@ export interface WorldState {
   } | null;
   /** Bot's current position in mini-grid coordinates. */
   position: { x: number; y: number };
+  /**
+   * Dreamfinder's square. When set, the wander loop keeps DF inside it. Absent
+   * for other bots (Clawd), which roam the whole map.
+   */
+  territory?: TerritoryRect | null;
 }
 
 /** Movement timing — must match client's MoveToEffect duration. */
@@ -71,17 +142,30 @@ export async function publishPath(
   });
 }
 
-/** Pick a random walkable cell that isn't the current position. */
+/**
+ * Pick a random walkable cell that isn't the current position.
+ *
+ * When [territory] is set, destinations are drawn from inside the square only,
+ * so Dreamfinder drifts around his zone instead of roaming the whole map. When
+ * null (other bots), the whole grid is fair game.
+ */
 function pickRandomDestination(
   current: GridCell,
   barrierSet: Set<string>,
   gridSize: number,
-  maxPathLength: number
+  maxPathLength: number,
+  territory?: TerritoryRect | null
 ): GridCell | null {
   // Try up to 20 times to find a reachable destination
   for (let attempt = 0; attempt < 20; attempt++) {
-    const x = Math.floor(Math.random() * gridSize);
-    const y = Math.floor(Math.random() * gridSize);
+    const x = territory
+      ? territory.minX +
+        Math.floor(Math.random() * (territory.maxX - territory.minX + 1))
+      : Math.floor(Math.random() * gridSize);
+    const y = territory
+      ? territory.minY +
+        Math.floor(Math.random() * (territory.maxY - territory.minY + 1))
+      : Math.floor(Math.random() * gridSize);
 
     if (x === current.x && y === current.y) continue;
     if (barrierSet.has(`${x},${y}`)) continue;
@@ -147,12 +231,15 @@ export function startWandering(
     while (!signal.aborted) {
       const { minPauseMs, maxPauseMs, maxPathLength } = botConfig.wanderConfig;
 
-      // Pick a random destination
+      // Pick a random destination (bounded to DF's square when one is set).
+      // Read territory fresh each iteration — it may arrive with map-info after
+      // the loop has already started.
       const dest = pickRandomDestination(
         world.position,
         barrierSet,
         map.gridSize,
-        maxPathLength
+        maxPathLength,
+        world.territory
       );
 
       if (!dest) {
