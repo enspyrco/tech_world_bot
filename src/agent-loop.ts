@@ -82,10 +82,13 @@ export function nearestWalkableCell(
   center: GridCell,
   barrierSet: Set<string>,
   gridSize: number,
+  bounds?: TerritoryRect,
 ): GridCell {
   const free = (x: number, y: number) =>
     x >= 0 && x < gridSize && y >= 0 && y < gridSize &&
-    !barrierSet.has(`${x},${y}`);
+    !barrierSet.has(`${x},${y}`) &&
+    // Prefer a seat inside the territory so DF starts (and stays) in his square.
+    (!bounds || cellInTerritory(x, y, bounds));
   if (free(center.x, center.y)) return { x: center.x, y: center.y };
   for (let r = 1; r < gridSize; r++) {
     for (let dx = -r; dx <= r; dx++) {
@@ -219,28 +222,50 @@ export function startWandering(
     }
 
     if (signal.aborted) return;
-
-    const map = world.map!;
-    const barrierSet = buildBarrierSet(map.barriers);
-
-    console.log(
-      `[Wander] Map loaded: ${map.mapId}. Starting to wander ` +
-        `(${map.barriers.length} barriers, grid ${map.gridSize}×${map.gridSize})`
-    );
+    console.log(`[Wander] Map loaded: ${world.map!.mapId}. Starting to wander.`);
 
     while (!signal.aborted) {
+      // Re-read the map EACH ITERATION so a mid-session map switch is honoured:
+      // barriers, grid size, and territory can all change under us (the client
+      // republishes map-info on switch, and dreamfinder-entry reseats DF).
+      const map = world.map;
+      if (!map) {
+        await abortableSleep(1_000, signal);
+        continue;
+      }
+      const barrierSet = buildBarrierSet(map.barriers);
+      const territory = world.territory ?? undefined;
       const { minPauseMs, maxPauseMs, maxPathLength } = botConfig.wanderConfig;
 
-      // Pick a random destination (bounded to DF's square when one is set).
-      // Read territory fresh each iteration — it may arrive with map-info after
-      // the loop has already started.
-      const dest = pickRandomDestination(
-        world.position,
-        barrierSet,
-        map.gridSize,
-        maxPathLength,
-        world.territory
-      );
+      // If DF is OUTSIDE his square (e.g. a map switch moved the territory out
+      // from under an in-flight stride), walk him back IN first: head to the
+      // nearest in-square cell and pathfind UNBOUNDED. Only once he is inside do
+      // we confine the path to the square — otherwise the territory bound would
+      // become a wall he can't cross to get home. When inside, targets are
+      // in-square and the path is bounded, so he can't leak back out.
+      const inside =
+        !territory ||
+        cellInTerritory(world.position.x, world.position.y, territory);
+      let dest: GridCell | null;
+      let bounds: TerritoryRect | undefined;
+      if (inside) {
+        dest = pickRandomDestination(
+          world.position,
+          barrierSet,
+          map.gridSize,
+          maxPathLength,
+          territory,
+        );
+        bounds = territory;
+      } else {
+        dest = nearestWalkableCell(
+          territoryCenter(territory!),
+          barrierSet,
+          map.gridSize,
+          territory,
+        );
+        bounds = undefined; // let the return path cross out-of-square cells
+      }
 
       if (!dest) {
         // Couldn't find a good destination — wait and try again
@@ -248,8 +273,14 @@ export function startWandering(
         continue;
       }
 
-      // Pathfind
-      const path = findPath(world.position, dest, barrierSet, map.gridSize);
+      // Pathfind — confined to the territory only when DF is already inside it.
+      const path = findPath(
+        world.position,
+        dest,
+        barrierSet,
+        map.gridSize,
+        bounds,
+      );
 
       if (path.length < 2) {
         // No path or already at destination

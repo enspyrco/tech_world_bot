@@ -57,7 +57,12 @@ export function findPath(
   start: GridCell,
   goal: GridCell,
   barrierSet: Set<string>,
-  gridSize: number = 50
+  gridSize: number = 50,
+  // Optional hard boundary: when set, the path may not step outside this cell
+  // rect (inclusive). Used to confine Dreamfinder's wander to his territory so
+  // A* can't route the path around a barrier and out of the drawn square.
+  // Structural type (not an import) to avoid a pathfinding<->agent-loop cycle.
+  bounds?: { minX: number; minY: number; maxX: number; maxY: number }
 ): GridCell[] {
   const key = (c: GridCell) => `${c.x},${c.y}`;
   const startKey = key(start);
@@ -116,6 +121,11 @@ export function findPath(
 
       // Bounds check
       if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
+
+      // Territory boundary: never step outside the confined rect (if given).
+      if (bounds &&
+        (nx < bounds.minX || nx > bounds.maxX ||
+         ny < bounds.minY || ny > bounds.maxY)) continue;
 
       const nKey = `${nx},${ny}`;
       if (barrierSet.has(nKey)) continue;

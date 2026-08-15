@@ -94,9 +94,11 @@ function isPlayerInTerritory(
   world: WorldState,
 ): boolean {
   const cellSize = world.map?.cellSize ?? DEFAULT_CELL_SIZE;
+  // Floor (not round) to match the client's cell identity (`px ~/ cellSize`), so
+  // a player on a boundary tile is quantised to the same cell on both sides.
   const cell = {
-    x: Math.round(pixelPos.x / cellSize),
-    y: Math.round(pixelPos.y / cellSize),
+    x: Math.floor(pixelPos.x / cellSize),
+    y: Math.floor(pixelPos.y / cellSize),
   };
   if (world.territory) {
     return cellInTerritory(cell.x, cell.y, world.territory);
@@ -235,6 +237,7 @@ export async function dreamfinderEntry(
               territoryCenter(world.territory),
               barrierSet,
               world.map.gridSize,
+              world.territory,
             );
           } else {
             world.position = { ...world.map.spawnPoint };
@@ -247,6 +250,11 @@ export async function dreamfinderEntry(
                 : ""),
           );
           publishPosition(ctx, world, config, world.map.cellSize).catch(() => {});
+          // The territory (and DF's position) just changed — re-evaluate who is
+          // in the square NOW, rather than waiting for each player's next
+          // (unreliable) position packet. Keeps the drawn box and the ear in
+          // sync across a map switch.
+          updateProximityAudio(room, pipeline, world);
         } catch (err) {
           console.error("[DF] map-info parse error:", err);
         }
