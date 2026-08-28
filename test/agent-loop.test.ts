@@ -37,7 +37,7 @@ test("CONTROL (null arm): a fresh signal has no abort listeners", () => {
   assert.equal(getEventListeners(c.signal, "abort").length, 0);
 });
 
-test("CONTROL (must-fail arm): the instrument CAN see a leak", async () => {
+test("CONTROL (must-fail arm): the instrument CAN see a leak", { timeout: 5000 }, async () => {
   const c = new AbortController();
   for (let i = 0; i < SLEEPS; i++) await leakySleep(0, c.signal);
   const leaked = getEventListeners(c.signal, "abort").length;
@@ -49,7 +49,7 @@ test("CONTROL (must-fail arm): the instrument CAN see a leak", async () => {
   );
 });
 
-test("abortableSleep removes its listener on the COMPLETION path", async () => {
+test("abortableSleep removes its listener on the COMPLETION path", { timeout: 5000 }, async () => {
   const c = new AbortController();
   for (let i = 0; i < SLEEPS; i++) {
     const completed = await abortableSleep(0, c.signal);
@@ -62,7 +62,11 @@ test("abortableSleep removes its listener on the COMPLETION path", async () => {
   );
 });
 
-test("abortableSleep still resolves false when aborted (capability preserved)", async () => {
+// `{ timeout }` is the must-fail control for the CANCELLATION arm. Without it a
+// broken fix that clears the timer but never resolves would HANG, and node:test's
+// default timeout is infinity — the test would never go red, it would just never
+// finish. A hang is not a failure. Tesla, cage-match round 1.
+test("abortableSleep still resolves false when aborted (capability preserved)", { timeout: 1000 }, async () => {
   const c = new AbortController();
   const pending = abortableSleep(60_000, c.signal);
   c.abort();
@@ -70,7 +74,7 @@ test("abortableSleep still resolves false when aborted (capability preserved)", 
   assert.equal(getEventListeners(c.signal, "abort").length, 0);
 });
 
-test("abortableSleep returns false immediately on an already-aborted signal", async () => {
+test("abortableSleep returns false immediately on an already-aborted signal", { timeout: 1000 }, async () => {
   const c = new AbortController();
   c.abort();
   assert.equal(await abortableSleep(60_000, c.signal), false);
