@@ -204,11 +204,20 @@ export function abortableSleep(
       resolve(false);
       return;
     }
-    const timer = setTimeout(() => resolve(true), ms);
+    // `{ once: true }` only removes the listener WHEN ABORT FIRES. The common
+    // path here is completion, not abort, so the listener must be removed
+    // explicitly — otherwise every sleep leaves one attached to a signal that
+    // lives for the whole room session. Same shape as the try/finally in
+    // adaptive-stream-detector.ts.
     const onAbort = () => {
       clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       resolve(false);
     };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
