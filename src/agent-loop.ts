@@ -204,12 +204,32 @@ export function abortableSleep(
       resolve(false);
       return;
     }
-    const timer = setTimeout(() => resolve(true), ms);
+    // The listener must be removed on BOTH exits. `{ once: true }` only removes
+    // it when abort fires, and the common path here is completion — so relying on
+    // it leaves one listener attached per sleep to a signal that lives for the
+    // whole room session. Both paths now unregister explicitly and `once` is
+    // deliberately NOT used: one cleanup mechanism, not two competing ones that
+    // invite a later hand to delete the "redundant" call. Same shape as the
+    // try/finally in adaptive-stream-detector.ts.
+    //
+    // ORDER IS LOAD-BEARING — do not reorder. `addEventListener` runs LAST, after
+    // both `timer` and `onAbort` exist, so no abort dispatch can reach a handler
+    // whose captures are still in the temporal dead zone. That matters more than it
+    // looks: a ReferenceError thrown inside a listener is reported and swallowed by
+    // EventTarget rather than rejecting the promise, so the sleep would hang forever
+    // instead of failing. The timer callback's forward reference to `onAbort` is
+    // safe because a setTimeout callback cannot run before this function body
+    // returns.
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
     const onAbort = () => {
       clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       resolve(false);
     };
-    signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort);
   });
 }
 

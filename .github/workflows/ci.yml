@@ -47,3 +47,7 @@ jobs:
       - name: Lint
         if: steps.docs-check.outputs.skip != 'true'
         run: npm run lint
+
+      - name: Test
+        if: steps.docs-check.outputs.skip != 'true'
+        run: npm test
