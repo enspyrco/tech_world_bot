@@ -47,7 +47,7 @@ Bot selection: `--bot=<name>` CLI arg → `BOT_NAME` env var → defaults to `cl
 
 ### Agent Dispatch
 
-LiveKit dispatches bots via **token-based dispatch**: the Firebase Cloud Function (`retrieveLiveKitToken`) embeds `RoomAgentDispatch` entries for both `clawd` and `gremlin` in every user's access token.
+LiveKit dispatches bots via **token-based dispatch**: [realm-token-server](https://github.com/enspyrco/realm-token-server)'s `/livekit-token` embeds `RoomAgentDispatch` entries for `clawd`, `gremlin` and `dreamfinder` in every user's access token (`AGENTS` in its `src/livekit.js` — add a bot there too). The `retrieveLiveKitToken` Cloud Function that used to do this was deleted 2026-10-27.
 
 **If a bot isn't being dispatched:**
 1. Check container logs on OCI: `ssh nick@149.118.69.221 docker logs --tail 100 tw-clawd` — look for `"registered worker"` and `"received job request"`.

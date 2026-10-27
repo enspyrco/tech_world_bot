@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
 
 /**
- * Minimal HTTP health-check server for Cloud Run.
+ * Minimal HTTP health endpoint — responds 200 to every request.
  *
- * Cloud Run requires a listening port to manage container lifecycle.
- * This server responds 200 to all requests — used for both health checks
- * and wake-up pings from the Cloud Function.
+ * Written for Cloud Run (which needed a listening port) and the retired
+ * Cloud Function's wake-up pings. On OCI nothing probes it today (the
+ * tech-world-bots compose has no healthcheck); kept as a cheap liveness
+ * target.
  */
 export function startHealthServer(): void {
   const port = parseInt(process.env.PORT || "8080", 10);

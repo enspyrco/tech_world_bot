@@ -92,7 +92,7 @@ const configs: Record<string, BotConfig> = {
  *
  * Checks (in order):
  * 1. `--bot=<name>` CLI argument
- * 2. `BOT_NAME` environment variable (used by Cloud Run)
+ * 2. `BOT_NAME` environment variable (set per container in infra/tech-world-bots)
  * 3. Falls back to "clawd"
  */
 export function resolveBotConfig(): BotConfig {

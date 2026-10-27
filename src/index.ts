@@ -913,10 +913,10 @@ export default defineAgent({
 
 // Run the agent when executed directly
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // Start HTTP health-check server for Cloud Run (no-op locally if PORT unset).
+  // Start the HTTP health endpoint (see server.ts).
   startHealthServer();
 
-  // Graceful shutdown on SIGTERM (sent by Cloud Run before stopping a container).
+  // Graceful shutdown on SIGTERM (sent by `docker stop` before killing the container).
   process.on("SIGTERM", () => {
     console.log("[Bot] SIGTERM received, shutting down gracefully...");
     process.exit(0);

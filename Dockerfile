@@ -21,7 +21,7 @@ COPY --from=build /app/dist/ ./dist/
 
 ENV NODE_ENV=production
 
-# Cloud Run requires a listening port
+# Health endpoint (src/server.ts); nothing probes it on OCI today
 EXPOSE 8080
 
 CMD ["node", "dist/index.js", "start"]
