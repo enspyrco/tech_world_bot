@@ -36,7 +36,7 @@ Clawd joins LiveKit rooms as a participant and responds to chat messages using C
 ## How it works
 
 1. Bot registers as a LiveKit Agent worker
-2. The Flutter client calls the `retrieveLiveKitToken` Cloud Function, which embeds a `RoomAgentDispatch` in the token's `RoomConfiguration` — this ensures the bot is dispatched whether the room is new or already exists
+2. The Flutter client gets its token from [realm-token-server](https://github.com/enspyrco/realm-token-server) (`/livekit-token`), which embeds a `RoomAgentDispatch` in the token's `RoomConfiguration` — this ensures the bot is dispatched whether the room is new or already exists
 3. Bot joins the room as participant `bot-claude`
 4. Players send messages on the `chat` data channel topic
 5. Bot calls Claude API and responds on `chat-response` topic
@@ -74,7 +74,7 @@ This decrypts secrets, rsyncs source, builds the Docker image on the VPS, and re
 ## Related
 
 - [tech_world](../tech_world) - Flutter client app
-- [tech_world_firebase_functions](../tech_world_firebase_functions) - Token generation
+- [realm-token-server](https://github.com/enspyrco/realm-token-server) - Token generation + agent dispatch (replaced the retired `tech_world_firebase_functions`)
 
 ## License
 
